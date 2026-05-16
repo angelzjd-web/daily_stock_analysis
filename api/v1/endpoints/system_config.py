@@ -29,6 +29,31 @@ from api.v1.schemas.system_config import (
     ValidateSystemConfigResponse,
 )
 from src.auth import COOKIE_NAME, is_auth_enabled, refresh_auth_state, verify_session
+from src.auth import get_user_by_id
+
+
+def _require_admin(request: Request) -> None:
+    """Raise HTTPException 403 if the current session user is not an admin.
+
+    When auth is disabled (single-user / desktop mode), all requests are allowed.
+    """
+    if not is_auth_enabled():
+        return
+
+    cookie_val = request.cookies.get(COOKIE_NAME)
+    if not cookie_val:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "未登录"})
+
+    session_data = verify_session(cookie_val)
+    if not session_data:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized", "message": "会话已过期"})
+
+    user = get_user_by_id(session_data["user_id"])
+    if not user or user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "forbidden", "message": "需要管理员权限"},
+        )
 from src.services.system_config_service import (
     ConfigConflictError,
     ConfigImportError,
@@ -98,10 +123,12 @@ def _raise_env_backup_access_error(exc: EnvBackupAccessDenied) -> None:
     description="Read current configuration from .env and return raw values.",
 )
 def get_system_config(
+    request: Request,
     include_schema: bool = Query(True, description="Whether to include schema metadata"),
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> SystemConfigResponse:
     """Load and return current system configuration."""
+    _require_admin(request)
     try:
         payload = service.get_config(include_schema=include_schema)
         return SystemConfigResponse.model_validate(payload)
@@ -159,9 +186,11 @@ def get_setup_status(
 )
 def update_system_config(
     request: UpdateSystemConfigRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> UpdateSystemConfigResponse:
     """Validate and persist system configuration updates."""
+    _require_admin(request_obj)
     try:
         payload = service.update(
             config_version=request.config_version,
@@ -359,9 +388,11 @@ def validate_system_config(
 )
 def test_llm_channel(
     request: TestLLMChannelRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> TestLLMChannelResponse:
     """Validate and test one channel definition without writing `.env`."""
+    _require_admin(request_obj)
     try:
         payload = service.test_llm_channel(
             name=request.name,
@@ -405,9 +436,11 @@ def test_llm_channel(
 )
 def test_notification_channel(
     request: TestNotificationChannelRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> TestNotificationChannelResponse:
     """Validate and test one notification channel without writing `.env`."""
+    _require_admin(request_obj)
     try:
         payload = service.test_notification_channel(
             channel=request.channel,
@@ -449,9 +482,11 @@ def test_notification_channel(
 )
 def discover_llm_channel_models(
     request: DiscoverLLMChannelModelsRequest,
+    request_obj: Request,
     service: SystemConfigService = Depends(get_system_config_service),
 ) -> DiscoverLLMChannelModelsResponse:
     """Discover models for one channel definition without writing `.env`."""
+    _require_admin(request_obj)
     try:
         payload = service.discover_llm_channel_models(
             name=request.name,

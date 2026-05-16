@@ -29,6 +29,7 @@ import inspect
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Valid orchestrator modes (ordered by cost/depth)
-VALID_MODES = ("quick", "standard", "full", "specialist")
+VALID_MODES = ("quick", "standard", "full", "specialist", "phase")
 
 
 @dataclass
@@ -268,6 +269,88 @@ class AgentOrchestrator:
             run_kwargs["timeout_seconds"] = timeout_seconds
         return agent.run(ctx, **run_kwargs)
 
+    def _execute_parallel_agents(
+        self,
+        agents: List[Any],
+        ctx: AgentContext,
+        progress_callback: Optional[Callable] = None,
+        timeout_seconds: Optional[float] = None,
+        phase_name: str = "parallel",
+    ) -> Dict[str, StageResult]:
+        """Execute multiple agents in parallel and return results by agent_name.
+
+        Args:
+            agents: List of agent instances to run concurrently
+            ctx: Shared AgentContext
+            progress_callback: Optional callback for progress events
+            timeout_seconds: Optional timeout per agent
+            phase_name: Phase identifier for progress reporting
+
+        Returns:
+            Dict mapping agent_name to StageResult
+        """
+        results: Dict[str, StageResult] = {}
+
+        # Send phase start event
+        if progress_callback:
+            progress_callback({
+                "type": "phase_start",
+                "phase": phase_name,
+                "agents": [a.agent_name for a in agents],
+                "message": f"▶ 并行启动 {len(agents)} 个Agent...",
+            })
+
+        # Run all agents concurrently with ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(agents), 5)) as executor:
+            # Submit all agent runs
+            future_to_agent = {}
+            for agent in agents:
+                self._prepare_agent(agent)
+                future = executor.submit(
+                    self._run_stage_agent,
+                    agent,
+                    ctx,
+                    progress_callback,
+                    timeout_seconds,
+                )
+                future_to_agent[future] = agent
+
+            # Collect results as they complete
+            for future in as_completed(future_to_agent):
+                agent = future_to_agent[future]
+                try:
+                    result = future.result()
+                    results[agent.agent_name] = result
+
+                    # Send agent completion event
+                    if progress_callback:
+                        progress_callback({
+                            "type": "agent_completed",
+                            "phase": phase_name,
+                            "agent": agent.agent_name,
+                            "status": result.status.value,
+                            "duration": result.duration_s,
+                            "message": f"✓ {agent.agent_name} 完成 ({result.duration_s:.1f}s)",
+                        })
+                except Exception as exc:
+                    logger.error("[Orchestrator] parallel agent '%s' raised exception: %s", agent.agent_name, exc)
+                    results[agent.agent_name] = StageResult(
+                        stage_name=agent.agent_name,
+                        status=StageStatus.FAILED,
+                        error=str(exc),
+                    )
+
+        # Send phase completion event
+        if progress_callback:
+            progress_callback({
+                "type": "phase_done",
+                "phase": phase_name,
+                "results": {name: r.status.value for name, r in results.items()},
+                "message": f"✅ {phase_name} 并行阶段完成",
+            })
+
+        return results
+
     # -----------------------------------------------------------------
     # Public interface (mirrors AgentExecutor)
     # -----------------------------------------------------------------
@@ -323,7 +406,7 @@ class AgentOrchestrator:
         ctx.session_id = session_id
         ctx.meta["response_mode"] = "chat"
 
-        session = conversation_manager.get_or_create(session_id)
+        session = conversation_manager.get_or_create(session_id, user_id=user_id)
         history = session.get_history()
         if history:
             ctx.meta["conversation_history"] = history
@@ -363,6 +446,309 @@ class AgentOrchestrator:
     # Pipeline execution
     # -----------------------------------------------------------------
 
+    def _execute_phase_pipeline(
+        self,
+        ctx: AgentContext,
+        parse_dashboard: bool = True,
+        progress_callback: Optional[Callable] = None,
+    ) -> OrchestratorResult:
+        """Execute 5-phase multi-agent workflow with parallel + sequential execution.
+
+        Phase 1: 4 analysts parallel (technical, fundamentals, news, sentiment)
+        Phase 2: Bull-bear debate sequence (bull → bear → manager)
+        Phase 3: Trader decision
+        Phase 4: 3 risk analysts parallel (aggressive, conservative, neutral)
+        Phase 5: Final integration
+        """
+        stats = AgentRunStats()
+        all_tool_calls: List[Dict[str, Any]] = []
+        models_used: List[str] = []
+        t0 = time.time()
+        timeout_s = self._get_timeout_seconds()
+
+        from src.agent.agents.technical_agent import TechnicalAgent
+        from src.agent.agents.intel_agent import IntelAgent
+        from src.agent.agents.decision_agent import DecisionAgent
+        from src.agent.agents.bull_agent import BullAgent
+        from src.agent.agents.bear_agent import BearAgent
+        from src.agent.agents.research_manager_agent import ResearchManagerAgent
+        from src.agent.agents.risk_analyst_agent import RiskAnalystAgent
+
+        common_kwargs = dict(
+            tool_registry=self.tool_registry,
+            llm_adapter=self.llm_adapter,
+            skill_instructions=self.skill_instructions,
+            technical_skill_policy=self.technical_skill_policy,
+        )
+
+        # Helper to emit progress events
+        def _emit(event_type: str, **kwargs):
+            if progress_callback:
+                progress_callback({"type": event_type, **kwargs})
+
+        # Agent display name mapping for Chinese progress messages
+        _AGENT_DISPLAY_NAMES = {
+            "technical": "技术分析师",
+            "intel": "新闻情报分析师",
+            "fundamentals": "基本面分析师",
+            "sentiment": "情绪分析师",
+            "bull": "多头研究员",
+            "bear": "空头研究员",
+            "research_manager": "研究主管",
+            "trader": "交易员",
+            "risk_analyst_aggressive": "激进型风险分析师",
+            "risk_analyst_conservative": "保守型风险分析师",
+            "risk_analyst_neutral": "中性型风险分析师",
+            "decision": "决策整合",
+        }
+
+        # ========== Phase 1: Parallel data fetching (4 agents) ==========
+        _emit("phase_start",
+              phase="phase1",
+              phase_label="阶段1：四维并行分析",
+              agents=["technical", "fundamentals", "news", "sentiment"],
+              message="🚀 阶段1：四维并行分析启动 — 技术面/基本面/新闻/情绪同步进行")
+
+        phase1_agents = [
+            TechnicalAgent(**common_kwargs),
+            IntelAgent(**common_kwargs),
+        ]
+        # Fundamentals agent (use IntelAgent with specialized prompt)
+        intel_kwargs = common_kwargs.copy()
+        intel_kwargs["skill_instructions"] = "Focus on fundamentals and company financials."
+        fundamentals_agent = IntelAgent(**intel_kwargs)
+        fundamentals_agent.agent_name = "fundamentals"
+        phase1_agents.append(fundamentals_agent)
+
+        # Sentiment agent (use IntelAgent with specialized prompt)
+        intel_kwargs2 = common_kwargs.copy()
+        intel_kwargs2["skill_instructions"] = "Focus on market sentiment and emotional indicators."
+        sentiment_agent = IntelAgent(**intel_kwargs2)
+        sentiment_agent.agent_name = "sentiment"
+        phase1_agents.append(sentiment_agent)
+
+        # Prepare all agents
+        for agent in phase1_agents:
+            self._prepare_agent(agent)
+
+        phase1_results = self._execute_parallel_agents(
+            phase1_agents, ctx, progress_callback, timeout_s, "phase1"
+        )
+
+        # Store Phase 1 results in context
+        for agent_name, result in phase1_results.items():
+            stats.record_stage(result)
+            all_tool_calls.extend(result.meta.get("tool_calls_log", []))
+            models_used.extend(result.meta.get("models_used", []))
+            if result.success and result.meta.get("raw_text"):
+                ctx.phase1_reports[agent_name] = {
+                    "raw_text": result.meta.get("raw_text"),
+                    "opinion": result.opinion,
+                }
+
+        _emit("phase_done",
+              phase="phase1",
+              phase_label="阶段1：四维并行分析",
+              results={n: r.status.value for n, r in phase1_results.items()},
+              message="✅ 阶段1完成 — 四维数据已收集")
+
+        # ========== Phase 2: Bull-bear debate (sequential) ==========
+        _emit("phase_start",
+              phase="phase2",
+              phase_label="阶段2：多空辩论",
+              agents=["bull", "bear", "research_manager"],
+              message="⚖️ 阶段2：多空辩论启动 — 多头→空头→研究主管裁决")
+
+        bull_agent = BullAgent(**common_kwargs)
+        bear_agent = BearAgent(**common_kwargs)
+        manager_agent = ResearchManagerAgent(**common_kwargs)
+
+        # Bull runs first
+        _emit("stage_start",
+              stage="bull",
+              agent_label=_AGENT_DISPLAY_NAMES.get("bull", "多头研究员"),
+              phase="phase2",
+              message="🐂 多头研究员正在构建看多论点...")
+        bull_result = self._run_stage_agent(bull_agent, ctx, progress_callback, timeout_s)
+        stats.record_stage(bull_result)
+        all_tool_calls.extend(bull_result.meta.get("tool_calls_log", []))
+        models_used.extend(bull_result.meta.get("models_used", []))
+        ctx.bull_bear_debate["bull_report"] = bull_result.meta.get("raw_text") if bull_result.success else None
+        _emit("stage_done",
+              stage="bull",
+              agent_label=_AGENT_DISPLAY_NAMES.get("bull", "多头研究员"),
+              phase="phase2",
+              status=bull_result.status.value,
+              duration=bull_result.duration_s,
+              message=f"{'✅' if bull_result.success else '❌'} 多头研究员完成 ({bull_result.duration_s:.1f}s)")
+
+        # Bear runs with bull's report in context
+        _emit("stage_start",
+              stage="bear",
+              agent_label=_AGENT_DISPLAY_NAMES.get("bear", "空头研究员"),
+              phase="phase2",
+              message="🐻 空头研究员正在构建看空论点...")
+        bear_result = self._run_stage_agent(bear_agent, ctx, progress_callback, timeout_s)
+        stats.record_stage(bear_result)
+        all_tool_calls.extend(bear_result.meta.get("tool_calls_log", []))
+        models_used.extend(bear_result.meta.get("models_used", []))
+        ctx.bull_bear_debate["bear_report"] = bear_result.meta.get("raw_text") if bear_result.success else None
+        _emit("stage_done",
+              stage="bear",
+              agent_label=_AGENT_DISPLAY_NAMES.get("bear", "空头研究员"),
+              phase="phase2",
+              status=bear_result.status.value,
+              duration=bear_result.duration_s,
+              message=f"{'✅' if bear_result.success else '❌'} 空头研究员完成 ({bear_result.duration_s:.1f}s)")
+
+        # Research manager arbitrates
+        _emit("stage_start",
+              stage="research_manager",
+              agent_label=_AGENT_DISPLAY_NAMES.get("research_manager", "研究主管"),
+              phase="phase2",
+              message="📋 研究主管正在裁决多空辩论...")
+        manager_result = self._run_stage_agent(manager_agent, ctx, progress_callback, timeout_s)
+        stats.record_stage(manager_result)
+        all_tool_calls.extend(manager_result.meta.get("tool_calls_log", []))
+        models_used.extend(manager_result.meta.get("models_used", []))
+        ctx.bull_bear_debate["manager_decision"] = manager_result.meta.get("raw_text") if manager_result.success else None
+        _emit("stage_done",
+              stage="research_manager",
+              agent_label=_AGENT_DISPLAY_NAMES.get("research_manager", "研究主管"),
+              phase="phase2",
+              status=manager_result.status.value,
+              duration=manager_result.duration_s,
+              message=f"{'✅' if manager_result.success else '❌'} 研究主管裁决完成 ({manager_result.duration_s:.1f}s)")
+
+        if manager_result.success and manager_result.opinion:
+            ctx.add_opinion(manager_result.opinion)
+
+        _emit("phase_done",
+              phase="phase2",
+              phase_label="阶段2：多空辩论",
+              message="✅ 阶段2完成 — 多空辩论已裁决")
+
+        # ========== Phase 3: Trader decision (single agent) ==========
+        _emit("phase_start",
+              phase="phase3",
+              phase_label="阶段3：交易决策",
+              agents=["trader"],
+              message="💰 阶段3：交易员正在制定交易方案...")
+        _emit("stage_start",
+              stage="trader",
+              agent_label=_AGENT_DISPLAY_NAMES.get("trader", "交易员"),
+              phase="phase3",
+              message="💰 交易员正在制定交易方案...")
+
+        trader_agent = DecisionAgent(**common_kwargs)
+        trader_agent.agent_name = "trader"
+        trader_result = self._run_stage_agent(trader_agent, ctx, progress_callback, timeout_s)
+        stats.record_stage(trader_result)
+        all_tool_calls.extend(trader_result.meta.get("tool_calls_log", []))
+        models_used.extend(trader_result.meta.get("models_used", []))
+        if trader_result.success and trader_result.opinion:
+            ctx.add_opinion(trader_result.opinion)
+
+        _emit("stage_done",
+              stage="trader",
+              agent_label=_AGENT_DISPLAY_NAMES.get("trader", "交易员"),
+              phase="phase3",
+              status=trader_result.status.value,
+              duration=trader_result.duration_s,
+              message=f"{'✅' if trader_result.success else '❌'} 交易员决策完成 ({trader_result.duration_s:.1f}s)")
+        _emit("phase_done",
+              phase="phase3",
+              phase_label="阶段3：交易决策",
+              message="✅ 阶段3完成 — 交易方案已制定")
+
+        # ========== Phase 4: Three-party risk assessment (parallel) ==========
+        _emit("phase_start",
+              phase="phase4",
+              phase_label="阶段4：三方风险评估",
+              agents=["aggressive", "conservative", "neutral"],
+              message="🛡️ 阶段4：三方风险评估启动 — 激进/保守/中性并行评估")
+
+        risk_agents = [
+            RiskAnalystAgent(stance="aggressive", **common_kwargs),
+            RiskAnalystAgent(stance="conservative", **common_kwargs),
+            RiskAnalystAgent(stance="neutral", **common_kwargs),
+        ]
+
+        phase4_results = self._execute_parallel_agents(
+            risk_agents, ctx, progress_callback, timeout_s, "phase4"
+        )
+
+        # Store Phase 4 results
+        for agent_name, result in phase4_results.items():
+            stats.record_stage(result)
+            all_tool_calls.extend(result.meta.get("tool_calls_log", []))
+            models_used.extend(result.meta.get("models_used", []))
+            stance = agent_name.replace("risk_analyst_", "")
+            if result.success and result.meta.get("raw_text"):
+                ctx.risk_assessments[stance] = {
+                    "raw_text": result.meta.get("raw_text"),
+                    "opinion": result.opinion,
+                }
+
+        _emit("phase_done",
+              phase="phase4",
+              phase_label="阶段4：三方风险评估",
+              results={n: r.status.value for n, r in phase4_results.items()},
+              message="✅ 阶段4完成 — 三方风险评估已汇总")
+
+        # ========== Phase 5: Final decision (aggregate all) ==========
+        _emit("phase_start",
+              phase="phase5",
+              phase_label="阶段5：最终整合",
+              agents=["decision"],
+              message="🎯 阶段5：最终决策整合中...")
+        _emit("stage_start",
+              stage="decision",
+              agent_label=_AGENT_DISPLAY_NAMES.get("decision", "决策整合"),
+              phase="phase5",
+              message="🎯 正在汇总所有分析结果，生成最终建议...")
+
+        decision_agent = DecisionAgent(**common_kwargs)
+        final_result = self._run_stage_agent(decision_agent, ctx, progress_callback, timeout_s)
+        stats.record_stage(final_result)
+        all_tool_calls.extend(final_result.meta.get("tool_calls_log", []))
+        models_used.extend(final_result.meta.get("models_used", []))
+        if final_result.success and final_result.opinion:
+            ctx.add_opinion(final_result.opinion)
+
+        _emit("stage_done",
+              stage="decision",
+              agent_label=_AGENT_DISPLAY_NAMES.get("decision", "决策整合"),
+              phase="phase5",
+              status=final_result.status.value,
+              duration=final_result.duration_s,
+              message=f"{'✅' if final_result.success else '❌'} 最终决策完成 ({final_result.duration_s:.1f}s)")
+        _emit("phase_done",
+              phase="phase5",
+              phase_label="阶段5：最终整合",
+              message="✅ 阶段5完成 — 分析全部完成！")
+
+        # Assemble final output
+        total_duration = round(time.time() - t0, 2)
+        stats.total_duration_s = total_duration
+        stats.models_used = list(dict.fromkeys(models_used))
+
+        dashboard, content = self._resolve_final_output(ctx, parse_dashboard=parse_dashboard)
+        model_str = ", ".join(dict.fromkeys(m for m in models_used if m))
+        provider = stats.models_used[0] if stats.models_used else ""
+
+        return OrchestratorResult(
+            success=bool(content),
+            content=content,
+            dashboard=dashboard,
+            tool_calls_log=all_tool_calls,
+            total_steps=stats.total_stages,
+            total_tokens=stats.total_tokens,
+            provider=provider,
+            model=model_str,
+            stats=stats,
+        )
+
     def _execute_pipeline(
         self,
         ctx: AgentContext,
@@ -370,6 +756,10 @@ class AgentOrchestrator:
         progress_callback: Optional[Callable] = None,
     ) -> OrchestratorResult:
         """Run the agent pipeline according to ``self.mode``."""
+
+        # Use phase pipeline for "phase" mode
+        if self.mode == "phase":
+            return self._execute_phase_pipeline(ctx, parse_dashboard, progress_callback)
         stats = AgentRunStats()
         all_tool_calls: List[Dict[str, Any]] = []
         models_used: List[str] = []

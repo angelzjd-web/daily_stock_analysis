@@ -14,6 +14,7 @@ export interface ChatRequest {
 export interface ChatStreamRequest extends ChatRequest {
   session_id?: string;
   context?: unknown;
+  agent_arch?: 'single' | 'multi';
 }
 
 export interface ChatResponse {

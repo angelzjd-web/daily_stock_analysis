@@ -20,7 +20,47 @@ from fastapi import APIRouter, HTTPException, Request
 from api.deps import get_current_user_id
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/mx", tags=["东方财富妙想数据"])
+router = APIRouter(tags=["东方财富妙想数据"])
+
+
+def _check_points_and_deduct(user_id: Optional[int]) -> None:
+    """Pre-check points balance before MX data operation. Raises 402 if insufficient."""
+    if not user_id:
+        return
+    try:
+        from src.auth import is_auth_enabled
+        if not is_auth_enabled():
+            return
+        from src.points import check_points_sufficient, COST_MX_DATA
+        sufficient, balance = check_points_sufficient(user_id, COST_MX_DATA)
+        if not sufficient:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "insufficient_points",
+                    "message": f"积分不足，当前余额 {balance}，需要 {COST_MX_DATA} 积分",
+                    "balance": balance,
+                    "required": COST_MX_DATA,
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+
+def _deduct_points(user_id: Optional[int]) -> None:
+    """Deduct points after successful MX data operation."""
+    if not user_id:
+        return
+    try:
+        from src.auth import is_auth_enabled
+        if not is_auth_enabled():
+            return
+        from src.points import deduct_points, COST_MX_DATA
+        deduct_points(user_id, COST_MX_DATA, "mx_data", "妙想数据查询")
+    except Exception as pts_err:
+        logger.warning("Failed to deduct points for MX data: %s", pts_err)
 
 
 @router.post("/finance-data", summary="金融数据查询")
@@ -35,6 +75,7 @@ async def query_finance_data(request: Request, body: dict):
         query: 自然语言查询文本
     """
     user_id = get_current_user_id(request)
+    _check_points_and_deduct(user_id)
     query = body.get("query", "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query 不能为空")
@@ -45,6 +86,7 @@ async def query_finance_data(request: Request, body: dict):
         result = await query_mx_finance_data(query=query)
         if "error" in result:
             raise HTTPException(status_code=502, detail=result["error"])
+        _deduct_points(user_id)
         return {"data": result, "query": query}
     except HTTPException:
         raise
@@ -65,6 +107,7 @@ async def search_finance_news(request: Request, body: dict):
         query: 自然语言搜索文本
     """
     user_id = get_current_user_id(request)
+    _check_points_and_deduct(user_id)
     query = body.get("query", "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query 不能为空")
@@ -75,6 +118,7 @@ async def search_finance_news(request: Request, body: dict):
         result = await query_financial_news(query=query, save_to_file=False)
         if "error" in result:
             raise HTTPException(status_code=502, detail=result["error"])
+        _deduct_points(user_id)
         return {"data": result, "query": query}
     except HTTPException:
         raise
@@ -95,6 +139,7 @@ async def query_macro_data(request: Request, body: dict):
         query: 自然语言查询文本
     """
     user_id = get_current_user_id(request)
+    _check_points_and_deduct(user_id)
     query = body.get("query", "").strip()
     if not query:
         raise HTTPException(status_code=400, detail="query 不能为空")
@@ -105,6 +150,7 @@ async def query_macro_data(request: Request, body: dict):
         result = await query_mx_macro_data(query=query)
         if "error" in result:
             raise HTTPException(status_code=502, detail=result["error"])
+        _deduct_points(user_id)
         return {"data": result, "query": query}
     except HTTPException:
         raise
@@ -125,6 +171,7 @@ async def screen_stocks(request: Request, body: dict):
         select_type: 标的类型（A股/港股/美股/基金/ETF/可转债/板块）
     """
     user_id = get_current_user_id(request)
+    _check_points_and_deduct(user_id)
     query = body.get("query", "").strip()
     select_type = body.get("select_type", "A股").strip()
     if not query:
@@ -147,6 +194,7 @@ async def screen_stocks(request: Request, body: dict):
         )
         if "error" in result:
             raise HTTPException(status_code=502, detail=result["error"])
+        _deduct_points(user_id)
         return {"data": result, "query": query, "select_type": select_type}
     except HTTPException:
         raise

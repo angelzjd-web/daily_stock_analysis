@@ -57,6 +57,7 @@ const ChatPage: React.FC = () => {
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [agentArch, setAgentArch] = useState<'single' | 'multi'>('single');
   const [sending, setSending] = useState(false);
   const [pointsWarning, setPointsWarning] = useState(false);
   const [isFollowUpContextLoading, setIsFollowUpContextLoading] = useState(false);
@@ -311,6 +312,7 @@ const ChatPage: React.FC = () => {
         message: msgText,
         session_id: sessionId,
         ...(usedSkillIds.length > 0 ? { skills: usedSkillIds } : {}),
+        agent_arch: agentArch,
         context: followUpContextRef.current ?? undefined,
       };
       followUpHydrationTokenRef.current += 1;
@@ -406,6 +408,20 @@ const ChatPage: React.FC = () => {
       return `${last.display_name || last.tool} 完成`;
     if (last.type === 'generating')
       return last.message || '正在生成最终分析...';
+    // Phase events — show phase-level status
+    if (last.type === 'phase_start')
+      return last.message || `${last.phase_label || last.phase} 启动中...`;
+    if (last.type === 'phase_done')
+      return last.message || `${last.phase_label || last.phase} 完成`;
+    if (last.type === 'agent_completed')
+      return last.message || `${last.agent} 完成`;
+    // Stage events — show agent-level status
+    if (last.type === 'stage_start')
+      return last.message || `${last.agent_label || last.stage} 分析中...`;
+    if (last.type === 'stage_done')
+      return last.message || `${last.agent_label || last.stage} 完成`;
+    if (last.type === 'pipeline_info')
+      return last.message || '处理中...';
     return '处理中...';
   };
 
@@ -452,6 +468,9 @@ const ChatPage: React.FC = () => {
         let statusClass = 'chat-progress-item-muted';
         let iconClass = 'chat-progress-dot-muted';
         let text = '';
+        let isPhaseEvent = false;
+        let isStageEvent = false;
+
         if (step.type === 'thinking') {
           text = step.message || `第 ${step.step} 步：思考`;
           statusClass = 'chat-progress-item-thinking';
@@ -468,7 +487,73 @@ const ChatPage: React.FC = () => {
           text = step.message || '生成分析';
           statusClass = 'chat-progress-item-generating';
           iconClass = 'chat-progress-dot-generating';
+        } else if (step.type === 'phase_start') {
+          // Phase start — show as prominent header
+          isPhaseEvent = true;
+          const phaseLabel = step.phase_label || step.phase || '';
+          text = step.message || `${phaseLabel} 启动`;
+          statusClass = 'chat-progress-item-generating';
+          iconClass = 'chat-progress-dot-generating';
+        } else if (step.type === 'phase_done') {
+          // Phase completion
+          isPhaseEvent = true;
+          text = step.message || `${step.phase} 阶段完成`;
+          statusClass = 'chat-progress-item-success';
+          iconClass = 'chat-progress-dot-success';
+        } else if (step.type === 'agent_completed') {
+          // Individual agent completion in parallel phase
+          text = step.message || `${step.agent} 完成`;
+          statusClass = 'chat-progress-item-success';
+          iconClass = 'chat-progress-dot-success';
+        } else if (step.type === 'stage_start') {
+          // Individual stage (sequential agent) start
+          isStageEvent = true;
+          text = step.message || `${step.agent_label || step.stage} 分析中...`;
+          statusClass = 'chat-progress-item-thinking';
+          iconClass = 'chat-progress-dot-thinking';
+        } else if (step.type === 'stage_done') {
+          // Individual stage completion
+          isStageEvent = true;
+          text = step.message || `${step.agent_label || step.stage} 完成`;
+          const isSuccess = step.status === 'completed';
+          statusClass = isSuccess ? 'chat-progress-item-success' : 'chat-progress-item-danger';
+          iconClass = isSuccess ? 'chat-progress-dot-success' : 'chat-progress-dot-danger';
+        } else if (step.type === 'pipeline_info') {
+          text = step.message || '';
+          statusClass = 'chat-progress-item-muted';
+          iconClass = 'chat-progress-dot-muted';
         }
+
+        // Phase events: render as prominent blocks
+        if (isPhaseEvent) {
+          return (
+            <div
+              key={idx}
+              className={cn(
+                'rounded-md px-3 py-2 text-sm font-medium',
+                step.type === 'phase_start'
+                  ? 'bg-cyan/10 text-cyan border border-cyan/20'
+                  : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20',
+              )}
+            >
+              {text}
+            </div>
+          );
+        }
+
+        // Stage events: render with slight indent and agent label
+        if (isStageEvent) {
+          return (
+            <div
+              key={idx}
+              className={cn('chat-progress-item', statusClass, 'pl-2')}
+            >
+              <span className={cn('chat-progress-dot', iconClass)} />
+              <span className="leading-relaxed">{text}</span>
+            </div>
+          );
+        }
+
         return (
           <div
             key={idx}
@@ -921,6 +1006,60 @@ const ChatPage: React.FC = () => {
                       {getCurrentStage(progressSteps)}
                     </span>
                   </div>
+                  {/* Real-time phase progress panel */}
+                  {progressSteps.length > 0 && (
+                    <div className="mt-3 space-y-1.5 border-t border-white/5 pt-3">
+                      {progressSteps.map((step, idx) => {
+                        // Only show phase/stage events in the live panel
+                        if (!['phase_start', 'phase_done', 'stage_start', 'stage_done', 'agent_completed'].includes(step.type)) {
+                          return null;
+                        }
+                        // Phase start: cyan header
+                        if (step.type === 'phase_start') {
+                          return (
+                            <div key={idx} className="rounded px-2 py-1 text-xs font-medium bg-cyan/10 text-cyan border border-cyan/15">
+                              {step.message || `${step.phase_label || step.phase} 启动`}
+                            </div>
+                          );
+                        }
+                        // Phase done: green header
+                        if (step.type === 'phase_done') {
+                          return (
+                            <div key={idx} className="rounded px-2 py-1 text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/15">
+                              {step.message || `${step.phase_label || step.phase} 完成`}
+                            </div>
+                          );
+                        }
+                        // Agent completed: small success
+                        if (step.type === 'agent_completed') {
+                          return (
+                            <div key={idx} className="pl-3 text-xs text-emerald-400/80">
+                              {step.message || `${step.agent} 完成`}
+                            </div>
+                          );
+                        }
+                        // Stage start: thinking dot
+                        if (step.type === 'stage_start') {
+                          return (
+                            <div key={idx} className="pl-3 text-xs text-secondary-text flex items-center gap-1.5">
+                              <div className="w-1.5 h-1.5 rounded-full bg-cyan/60 animate-pulse flex-shrink-0" />
+                              {step.message || `${step.agent_label || step.stage} 分析中...`}
+                            </div>
+                          );
+                        }
+                        // Stage done: success
+                        if (step.type === 'stage_done') {
+                          const ok = step.status === 'completed';
+                          return (
+                            <div key={idx} className={cn('pl-3 text-xs', ok ? 'text-emerald-400/80' : 'text-red-400/80')}>
+                              {step.message || `${step.agent_label || step.stage} ${ok ? '完成' : '失败'}`}
+                            </div>
+                          );
+                        }
+                        return null;
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1032,6 +1171,43 @@ const ChatPage: React.FC = () => {
                 })}
               </div>
             )}
+
+              {/* Agent mode selector */}
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+                <span className="text-xs text-muted-text font-medium uppercase tracking-wider flex-shrink-0">
+                  模式
+                </span>
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer group">
+                  <input
+                    type="radio"
+                    name="agent-arch"
+                    value="single"
+                    checked={agentArch === 'single'}
+                    onChange={() => setAgentArch('single')}
+                    className="chat-skill-checkbox"
+                  />
+                  <span
+                    className={`transition-colors text-sm ${agentArch === 'single' ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                  >
+                    普通
+                  </span>
+                </label>
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer group">
+                  <input
+                    type="radio"
+                    name="agent-arch"
+                    value="multi"
+                    checked={agentArch === 'multi'}
+                    onChange={() => setAgentArch('multi')}
+                    className="chat-skill-checkbox"
+                  />
+                  <span
+                    className={`transition-colors text-sm ${agentArch === 'multi' ? 'text-foreground font-medium' : 'text-secondary-text group-hover:text-foreground'}`}
+                  >
+                    多智能体
+                  </span>
+                </label>
+              </div>
 
               <div className="flex items-end gap-3">
                 <textarea

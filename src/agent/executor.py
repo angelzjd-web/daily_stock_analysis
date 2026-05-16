@@ -556,7 +556,7 @@ class AgentExecutor:
         tool_decls = self.tool_registry.to_openai_tools()
 
         # Get conversation history
-        session = conversation_manager.get_or_create(session_id)
+        session = conversation_manager.get_or_create(session_id, user_id=user_id)
         history = session.get_history()
 
         # Initialize conversation

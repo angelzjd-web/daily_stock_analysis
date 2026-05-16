@@ -717,8 +717,8 @@ class Config:
     agent_skills: List[str] = field(default_factory=list)
     agent_skill_dir: Optional[str] = None
     agent_nl_routing: bool = False  # Enable natural language routing in bot dispatcher
-    agent_arch: str = "single"     # Agent architecture: 'single' (legacy) or 'multi' (orchestrator)
-    agent_orchestrator_mode: str = "standard"  # Orchestrator mode: quick/standard/full/specialist
+    agent_arch: str = "multi"      # Agent architecture: 'single' (legacy) or 'multi' (orchestrator)
+    agent_orchestrator_mode: str = "phase"  # Orchestrator mode: quick/standard/full/specialist/phase
     agent_orchestrator_timeout_s: int = 600  # Cooperative timeout budget for the whole multi-agent pipeline
     agent_risk_override: bool = True  # Allow risk agent to veto buy signals
     agent_deep_research_budget: int = 30000  # Max token budget for deep research
@@ -981,7 +981,7 @@ class Config:
 
     # --- Post-init validation ---------------------------------------------------
     _VALID_AGENT_ARCH = {"single", "multi"}
-    _VALID_ORCHESTRATOR_MODES = {"quick", "standard", "full", "specialist"}
+    _VALID_ORCHESTRATOR_MODES = {"quick", "standard", "full", "specialist", "phase"}
     _VALID_SKILL_ROUTING = {"auto", "manual"}
     _WEBUI_RUNTIME_ENV_FILE_PRIORITY_KEYS = frozenset(
         {
@@ -1454,7 +1454,7 @@ class Config:
             agent_skill_dir=os.getenv('AGENT_SKILL_DIR') or os.getenv('AGENT_STRATEGY_DIR'),
             agent_nl_routing=os.getenv('AGENT_NL_ROUTING', 'false').lower() == 'true',
             agent_arch=os.getenv('AGENT_ARCH', 'single').lower(),
-            agent_orchestrator_mode=os.getenv('AGENT_ORCHESTRATOR_MODE', 'standard').lower(),
+            agent_orchestrator_mode=os.getenv('AGENT_ORCHESTRATOR_MODE', 'phase').lower(),
             agent_orchestrator_timeout_s=parse_env_int(
                 os.getenv('AGENT_ORCHESTRATOR_TIMEOUT_S'),
                 600,

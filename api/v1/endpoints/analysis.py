@@ -809,7 +809,7 @@ def get_analysis_status(task_id: str, request: Request) -> TaskStatus:
     try:
         from src.storage import DatabaseManager
         db = DatabaseManager.get_instance()
-        records = db.get_analysis_history(query_id=task_id, limit=1)
+        records = db.get_analysis_history(query_id=task_id, limit=1, user_id=db_user_id)
 
         if records:
             record = records[0]

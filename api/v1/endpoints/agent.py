@@ -50,6 +50,7 @@ class ChatRequest(BaseModel):
         validation_alias=AliasChoices("skills", "strategies"),
     )
     context: Optional[Dict[str, Any]] = None  # Previous analysis context for data reuse
+    agent_arch: Optional[str] = None  # Override AGENT_ARCH config: "single" or "multi"
 
     @property
     def effective_skills(self) -> Optional[List[str]]:
@@ -189,7 +190,7 @@ async def agent_chat(http_request: Request, request: ChatRequest):
 
     try:
         skills = request.effective_skills
-        executor = _build_executor(config, skills or None)
+        executor = _build_executor(config, skills or None, agent_arch=request.agent_arch)
 
         # Pass explicit skills into context for the orchestrator.
         # Direct assignment so caller-provided skills always take precedence
@@ -319,11 +320,33 @@ class SendChatRequest(BaseModel):
 
 
 @router.post("/chat/send")
-async def send_chat_to_notification(request: SendChatRequest):
+async def send_chat_to_notification(http_request: Request, request: SendChatRequest):
     """
     Send chat session content to configured notification channels.
     Uses run_in_executor to avoid blocking the event loop.
+    Requires authentication when auth is enabled.
     """
+    # Verify authentication
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
+    # When auth is enabled, require a valid user
+    if db_user_id is None:
+        try:
+            from src.auth import is_auth_enabled
+            if is_auth_enabled():
+                raise HTTPException(
+                    status_code=401,
+                    detail={"error": "unauthorized", "message": "需要登录才能发送通知"},
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
     from src.notification import NotificationService
 
     loop = asyncio.get_running_loop()
@@ -340,10 +363,44 @@ async def send_chat_to_notification(request: SendChatRequest):
     return {"success": True}
 
 
-def _build_executor(config, skills: Optional[List[str]] = None):
-    """Build and return a configured AgentExecutor (sync helper)."""
+def _build_executor(config, skills: Optional[List[str]] = None, agent_arch: Optional[str] = None):
+    """Build and return a configured AgentExecutor (sync helper).
+
+    When *agent_arch* is provided ("single" or "multi"), it overrides the
+    AGENT_ARCH config value so users can switch mode from the chat UI.
+    """
     from src.agent.factory import build_agent_executor
+    if agent_arch and agent_arch in ("single", "multi"):
+        config = _patch_config_attr(config, "agent_arch", agent_arch)
     return build_agent_executor(config, skills=skills)
+
+
+def _patch_config_attr(config, attr: str, value):
+    """Return a lightweight config wrapper that overrides one attribute."""
+    import types
+
+    class _ConfigProxy:
+        """Proxy that delegates all attribute access to the original config,
+        except for the overridden attribute."""
+
+        def __init__(self, base, overrides: dict):
+            object.__setattr__(self, '_base', base)
+            object.__setattr__(self, '_overrides', overrides)
+
+        def __getattr__(self, name):
+            overrides = object.__getattribute__(self, '_overrides')
+            if name in overrides:
+                return overrides[name]
+            return getattr(object.__getattribute__(self, '_base'), name)
+
+        def __setattr__(self, name, val):
+            # Allow pickle / other internals but route real sets to base
+            if name.startswith('_'):
+                object.__setattr__(self, name, val)
+            else:
+                setattr(object.__getattribute__(self, '_base'), name, val)
+
+    return _ConfigProxy(config, {attr: value})
 
 
 async def _run_research_in_background(
@@ -379,7 +436,7 @@ class ResearchResponse(BaseModel):
 
 
 @router.post("/research", response_model=ResearchResponse)
-async def agent_research(request: ResearchRequest):
+async def agent_research(http_request: Request, request: ResearchRequest):
     """Run a deep-research query via the ResearchAgent.
 
     Similar to the ``/research`` bot command but exposed as a REST endpoint.
@@ -387,6 +444,36 @@ async def agent_research(request: ResearchRequest):
     config = get_config()
     if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
+
+    # Extract user_id for points deduction
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
+    # Check points balance before proceeding
+    if db_user_id:
+        try:
+            from src.auth import is_auth_enabled
+            if is_auth_enabled():
+                from src.points import check_points_sufficient, COST_RESEARCH
+                sufficient, balance = check_points_sufficient(db_user_id, COST_RESEARCH)
+                if not sufficient:
+                    raise HTTPException(
+                        status_code=402,
+                        detail={
+                            "error": "insufficient_points",
+                            "message": f"积分不足，当前余额 {balance}，需要 {COST_RESEARCH} 积分",
+                            "balance": balance,
+                            "required": COST_RESEARCH,
+                        }
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
     question = request.question
     context: Optional[Dict[str, Any]] = None
@@ -427,6 +514,16 @@ async def agent_research(request: ResearchRequest):
                 error=f"Deep research timed out after {research_timeout}s",
             )
 
+        # Deduct points after successful research
+        if result.success and db_user_id:
+            try:
+                from src.auth import is_auth_enabled
+                if is_auth_enabled():
+                    from src.points import deduct_points, COST_RESEARCH
+                    deduct_points(db_user_id, COST_RESEARCH, "research", "深度研究")
+            except Exception as pts_err:
+                logger.warning("Failed to deduct points for agent research: %s", pts_err)
+
         return ResearchResponse(
             success=result.success,
             content=result.report,
@@ -434,6 +531,8 @@ async def agent_research(request: ResearchRequest):
             token_usage=result.total_tokens,
             error=result.error if not result.success else None,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Agent research API failed: %s", e)
         logger.exception("Agent research error details:")
@@ -506,7 +605,7 @@ async def agent_chat_stream(http_request: Request, request: ChatRequest):
 
     def run_sync():
         try:
-            executor = _build_executor(config, skills or None)
+            executor = _build_executor(config, skills or None, agent_arch=request.agent_arch)
             result = executor.chat(
                 message=request.message,
                 session_id=session_id,

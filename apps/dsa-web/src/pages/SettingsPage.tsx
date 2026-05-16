@@ -7,9 +7,7 @@ import { ApiErrorAlert, Button, ConfirmDialog, EmptyState } from '../components/
 import {
   AuthSettingsCard,
   ChangePasswordCard,
-  IntelligentImport,
   LLMChannelEditor,
-  NotificationTestPanel,
   SettingsCategoryNav,
   SettingsAlert,
   SettingsField,
@@ -199,6 +197,12 @@ function formatEnvBackupFilename(isDesktopRuntime: boolean) {
   return `${isDesktopRuntime ? 'dsa-desktop-env' : 'dsa-env'}_${date}_${time}.env`;
 }
 
+/** Categories shown in the settings UI. Others (base, data_source, agent, backtest, uncategorized)
+ *  are hidden because they are either superseded (data_source → MX API),
+ *  moved to their own pages (agent → ChatPage, backtest → BacktestPage),
+ *  or no longer needed in the settings UI (base → STOCK_LIST is CLI-only). */
+const VISIBLE_CATEGORIES = new Set<SystemConfigCategory>(['system', 'ai_model']);
+
 const SettingsPage: React.FC = () => {
   const { authEnabled, passwordChangeable } = useAuth();
   const [envBackupActionError, setEnvBackupActionError] = useState<ParsedApiError | null>(null);
@@ -309,7 +313,15 @@ const SettingsPage: React.FC = () => {
     };
   }, [canCheckDesktopUpdate, desktopRuntimeApi]);
 
-  const rawActiveItems = itemsByCategory[activeCategory] || [];
+  // Filter categories to only show relevant ones in the settings UI
+  const visibleCategories = categories.filter((c) => VISIBLE_CATEGORIES.has(c.category as SystemConfigCategory));
+
+  // If activeCategory is not visible, auto-switch to the first visible one
+  const effectiveCategory = VISIBLE_CATEGORIES.has(activeCategory as SystemConfigCategory)
+    ? activeCategory
+    : (visibleCategories[0]?.category || 'system');
+
+  const rawActiveItems = itemsByCategory[effectiveCategory] || [];
   const rawActiveItemMap = new Map(rawActiveItems.map((item) => [item.key, String(item.value ?? '')]));
   const hasConfiguredChannels = Boolean((rawActiveItemMap.get('LLM_CHANNELS') || '').trim());
   const hasLitellmConfig = Boolean((rawActiveItemMap.get('LITELLM_CONFIG') || '').trim());
@@ -347,9 +359,8 @@ const SettingsPage: React.FC = () => {
   const SYSTEM_HIDDEN_KEYS = new Set([
     'ADMIN_AUTH_ENABLED',
   ]);
-  const AGENT_HIDDEN_KEYS = new Set<string>();
   const activeItems =
-    activeCategory === 'ai_model'
+    effectiveCategory === 'ai_model'
       ? rawActiveItems.filter((item) => {
         if (hasConfiguredChannels && LLM_CHANNEL_KEY_RE.test(item.key)) {
           return false;
@@ -359,10 +370,8 @@ const SettingsPage: React.FC = () => {
         }
         return true;
       })
-      : activeCategory === 'system'
+      : effectiveCategory === 'system'
         ? rawActiveItems.filter((item) => !SYSTEM_HIDDEN_KEYS.has(item.key))
-      : activeCategory === 'agent'
-        ? rawActiveItems.filter((item) => !AGENT_HIDDEN_KEYS.has(item.key))
       : rawActiveItems;
   const isEnvBackupAllowed = isDesktopRuntime || authEnabled;
   const envBackupActionDisabled = isLoading || isSaving || isExportingEnv || isImportingEnv || !isEnvBackupAllowed;
@@ -504,7 +513,7 @@ const SettingsPage: React.FC = () => {
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-foreground">系统设置</h1>
             <p className="text-xs leading-6 text-muted-text">
-              统一管理模型、数据源、通知、安全认证与导入能力。
+              管理模型接入与系统安全。通知渠道已移至独立的「通知」页面。
             </p>
           </div>
 
@@ -555,17 +564,17 @@ const SettingsPage: React.FC = () => {
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-[280px_1fr]">
           <aside className="lg:sticky lg:top-4 lg:self-start">
             <SettingsCategoryNav
-              categories={categories}
+              categories={visibleCategories}
               itemsByCategory={itemsByCategory}
-              activeCategory={activeCategory}
+              activeCategory={effectiveCategory}
               onSelect={setActiveCategory}
             />
           </aside>
 
           <section className="space-y-4">
-            {activeCategory === 'system' ? <AuthSettingsCard /> : null}
-            {activeCategory === 'system' ? <UserManagementCard /> : null}
-            {activeCategory === 'system' ? (
+            {effectiveCategory === 'system' ? <AuthSettingsCard /> : null}
+            {effectiveCategory === 'system' ? <UserManagementCard /> : null}
+            {effectiveCategory === 'system' ? (
               <SettingsSectionCard
                 title="版本信息"
                 description="用于确认当前 WebUI 静态资源是否已经切换到最新构建。"
@@ -659,7 +668,7 @@ const SettingsPage: React.FC = () => {
                 ) : null}
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'system' ? (
+            {effectiveCategory === 'system' ? (
               <SettingsSectionCard
                 title="配置备份"
                 description="导出当前已保存的 .env 备份，或从备份文件恢复配置。导入会覆盖备份中出现的键并立即重载。"
@@ -718,25 +727,7 @@ const SettingsPage: React.FC = () => {
                 </div>
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'base' ? (
-              <SettingsSectionCard
-                title="智能导入"
-                description="从图片、文件或剪贴板中提取股票代码，并合并到自选股列表。"
-              >
-                <IntelligentImport
-                  stockListValue={
-                    (activeItems.find((i) => i.key === 'STOCK_LIST')?.value as string) ?? ''
-                  }
-                  configVersion={configVersion}
-                  maskToken={maskToken}
-                  onMerged={async () => {
-                    await refreshAfterExternalSave(['STOCK_LIST']);
-                  }}
-                  disabled={isSaving || isLoading}
-                />
-              </SettingsSectionCard>
-            ) : null}
-            {activeCategory === 'ai_model' ? (
+            {effectiveCategory === 'ai_model' ? (
               <SettingsSectionCard
                 title="AI 模型接入"
                 description="统一管理模型渠道、基础地址、API Key、主模型与备选模型。"
@@ -752,20 +743,13 @@ const SettingsPage: React.FC = () => {
                 />
               </SettingsSectionCard>
             ) : null}
-            {activeCategory === 'system' && passwordChangeable ? (
+            {effectiveCategory === 'system' && passwordChangeable ? (
               <ChangePasswordCard />
-            ) : null}
-            {activeCategory === 'notification' ? (
-              <NotificationTestPanel
-                items={rawActiveItems.map((item) => ({ key: item.key, value: String(item.value ?? '') }))}
-                maskToken={maskToken}
-                disabled={isSaving || isLoading}
-              />
             ) : null}
             {activeItems.length ? (
               <SettingsSectionCard
                 title="当前分类配置项"
-                description={getCategoryDescriptionZh(activeCategory as SystemConfigCategory, '') || '使用统一字段卡片维护当前分类的系统配置。'}
+                description={getCategoryDescriptionZh(effectiveCategory as SystemConfigCategory, '') || '使用统一字段卡片维护当前分类的系统配置。'}
               >
                 {activeItems.map((item) => (
                   <SettingsField

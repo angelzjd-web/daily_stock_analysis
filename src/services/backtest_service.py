@@ -205,6 +205,7 @@ class BacktestService:
                 touched_codes=sorted(touched_codes),
                 eval_window_days=int(eval_window_days),
                 engine_version=str(engine_version),
+                user_id=user_id,
             )
 
         return {
@@ -307,6 +308,7 @@ class BacktestService:
             code=lookup_code,
             eval_window_days=eval_window_days,
             engine_version=engine_version,
+            user_id=user_id,
         )
         if summary is None:
             return None
@@ -371,17 +373,22 @@ class BacktestService:
         except Exception as exc:
             logger.warning(f"补全日线数据失败({code}): {exc}")
 
-    def _recompute_summaries(self, *, touched_codes: List[str], eval_window_days: int, engine_version: str) -> None:
+    def _recompute_summaries(self, *, touched_codes: List[str], eval_window_days: int, engine_version: str, user_id: Optional[int] = None) -> None:
         with self.db.get_session() as session:
-            # overall
-            overall_rows = session.execute(
-                select(BacktestResult).where(
+            # overall — filter by user_id via AnalysisHistory join
+            overall_query = (
+                select(BacktestResult)
+                .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
+                .where(
                     and_(
                         BacktestResult.eval_window_days == eval_window_days,
                         BacktestResult.engine_version == engine_version,
                     )
                 )
-            ).scalars().all()
+            )
+            if user_id is not None:
+                overall_query = overall_query.where(AnalysisHistory.user_id == user_id)
+            overall_rows = session.execute(overall_query).scalars().all()
             overall_data = BacktestEngine.compute_summary(
                 results=overall_rows,
                 scope="overall",
@@ -389,19 +396,24 @@ class BacktestService:
                 eval_window_days=eval_window_days,
                 engine_version=engine_version,
             )
-            overall_summary = self._build_summary_model(overall_data)
+            overall_summary = self._build_summary_model(overall_data, user_id=user_id)
             self.repo.upsert_summary(overall_summary)
 
             for code in touched_codes:
-                rows = session.execute(
-                    select(BacktestResult).where(
+                code_query = (
+                    select(BacktestResult)
+                    .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
+                    .where(
                         and_(
                             BacktestResult.code == code,
                             BacktestResult.eval_window_days == eval_window_days,
                             BacktestResult.engine_version == engine_version,
                         )
                     )
-                ).scalars().all()
+                )
+                if user_id is not None:
+                    code_query = code_query.where(AnalysisHistory.user_id == user_id)
+                rows = session.execute(code_query).scalars().all()
                 data = BacktestEngine.compute_summary(
                     results=rows,
                     scope="stock",
@@ -409,12 +421,13 @@ class BacktestService:
                     eval_window_days=eval_window_days,
                     engine_version=engine_version,
                 )
-                summary = self._build_summary_model(data)
+                summary = self._build_summary_model(data, user_id=user_id)
                 self.repo.upsert_summary(summary)
 
     @staticmethod
-    def _build_summary_model(summary_data: Dict[str, Any]) -> BacktestSummary:
+    def _build_summary_model(summary_data: Dict[str, Any], *, user_id: Optional[int] = None) -> BacktestSummary:
         return BacktestSummary(
+            user_id=user_id,
             scope=summary_data.get("scope"),
             code=summary_data.get("code"),
             eval_window_days=summary_data.get("eval_window_days"),

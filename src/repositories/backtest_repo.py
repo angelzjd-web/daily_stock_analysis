@@ -206,18 +206,23 @@ class BacktestRepository:
             return list(rows)
 
     def upsert_summary(self, summary: BacktestSummary) -> None:
-        """Insert or replace summary row by unique key."""
+        """Insert or replace summary row by unique key (including user_id)."""
         with self.db.get_session() as session:
+            conditions = [
+                BacktestSummary.scope == summary.scope,
+                BacktestSummary.code == summary.code,
+                BacktestSummary.eval_window_days == summary.eval_window_days,
+                BacktestSummary.engine_version == summary.engine_version,
+            ]
+            # Match by user_id: both NULL (global) or same value
+            if summary.user_id is not None:
+                conditions.append(BacktestSummary.user_id == summary.user_id)
+            else:
+                conditions.append(BacktestSummary.user_id.is_(None))
+
             existing = session.execute(
                 select(BacktestSummary)
-                .where(
-                    and_(
-                        BacktestSummary.scope == summary.scope,
-                        BacktestSummary.code == summary.code,
-                        BacktestSummary.eval_window_days == summary.eval_window_days,
-                        BacktestSummary.engine_version == summary.engine_version,
-                    )
-                )
+                .where(and_(*conditions))
                 .limit(1)
             ).scalar_one_or_none()
 
@@ -258,6 +263,7 @@ class BacktestRepository:
         code: Optional[str],
         eval_window_days: Optional[int] = None,
         engine_version: str,
+        user_id: Optional[int] = None,
     ) -> Optional[BacktestSummary]:
         with self.db.get_session() as session:
             conditions = [
@@ -267,6 +273,11 @@ class BacktestRepository:
             ]
             if eval_window_days is not None:
                 conditions.append(BacktestSummary.eval_window_days == eval_window_days)
+            # Filter by user_id
+            if user_id is not None:
+                conditions.append(BacktestSummary.user_id == user_id)
+            else:
+                conditions.append(BacktestSummary.user_id.is_(None))
 
             row = session.execute(
                 select(BacktestSummary)

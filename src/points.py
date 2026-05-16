@@ -20,9 +20,13 @@ logger = logging.getLogger(__name__)
 
 COST_ANALYSIS = 5
 COST_AGENT = 20
+COST_RESEARCH = 30
+COST_MX_DATA = 2
 
 TX_TYPE_ANALYSIS = "analysis"
 TX_TYPE_AGENT = "agent"
+TX_TYPE_RESEARCH = "research"
+TX_TYPE_MX_DATA = "mx_data"
 TX_TYPE_ADMIN_GRANT = "admin_grant"
 TX_TYPE_ADMIN_DEDUCT = "admin_deduct"
 

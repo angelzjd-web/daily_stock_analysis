@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 class ConversationSession:
     """A single multi-turn conversation session."""
     session_id: str
+    user_id: Optional[int] = None
     context: Dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.now)
     last_active: datetime = field(default_factory=datetime.now)
@@ -35,7 +36,7 @@ class ConversationSession:
 
     def get_history(self) -> List[Dict[str, Any]]:
         """Get message history."""
-        messages = get_db().get_conversation_history(self.session_id)
+        messages = get_db().get_conversation_history(self.session_id, user_id=self.user_id)
         return messages
 
 class ConversationManager:
@@ -46,17 +47,20 @@ class ConversationManager:
         self.ttl = timedelta(minutes=ttl_minutes)
         self._lock = threading.RLock()
 
-    def get_or_create(self, session_id: str) -> ConversationSession:
+    def get_or_create(self, session_id: str, user_id: Optional[int] = None) -> ConversationSession:
         """Get an existing session or create a new one."""
         with self._lock:
             self._cleanup_expired()
 
             if session_id not in self._sessions:
-                self._sessions[session_id] = ConversationSession(session_id=session_id)
+                self._sessions[session_id] = ConversationSession(session_id=session_id, user_id=user_id)
                 logger.info(f"Created new conversation session: {session_id}")
             else:
                 # Update last active time
                 self._sessions[session_id].last_active = datetime.now()
+                # Update user_id if provided and not yet set
+                if user_id is not None and self._sessions[session_id].user_id is None:
+                    self._sessions[session_id].user_id = user_id
 
             return self._sessions[session_id]
 

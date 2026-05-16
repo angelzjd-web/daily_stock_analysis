@@ -451,11 +451,12 @@ class BacktestSummary(Base):
 
     __table_args__ = (
         UniqueConstraint(
+            'user_id',
             'scope',
             'code',
             'eval_window_days',
             'engine_version',
-            name='uix_backtest_summary_scope_code_window_version',
+            name='uix_backtest_summary_user_scope_code_window_version',
         ),
     )
 
@@ -672,6 +673,27 @@ class ConversationMessage(Base):
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, index=True)
+
+
+class UserNotificationConfig(Base):
+    """用户通知渠道配置表 — 每个用户独立存储通知渠道凭据与偏好。"""
+
+    __tablename__ = 'user_notification_config'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    key = Column(String(128), nullable=False)
+    value = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint('user_id', 'key', name='uix_user_notif_key'),
+        Index('ix_user_notif_user_id', 'user_id'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserNotificationConfig(user_id={self.user_id}, key={self.key})>"
 
 
 class LLMUsage(Base):
@@ -1958,25 +1980,31 @@ class DatabaseManager:
             )
             session.add(msg)
 
-    def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_conversation_history(self, session_id: str, limit: int = 20, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         获取 Agent 对话历史
         """
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            if user_id is not None:
+                conditions.append(ConversationMessage.user_id == user_id)
             stmt = select(ConversationMessage).filter(
-                ConversationMessage.session_id == session_id
+                *conditions
             ).order_by(ConversationMessage.created_at.desc()).limit(limit)
             messages = session.execute(stmt).scalars().all()
 
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
 
-    def conversation_session_exists(self, session_id: str) -> bool:
+    def conversation_session_exists(self, session_id: str, user_id: Optional[int] = None) -> bool:
         """Return True when at least one message exists for the given session."""
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            if user_id is not None:
+                conditions.append(ConversationMessage.user_id == user_id)
             stmt = (
                 select(ConversationMessage.id)
-                .where(ConversationMessage.session_id == session_id)
+                .where(*conditions)
                 .limit(1)
             )
             return session.execute(stmt).scalar() is not None
@@ -2134,6 +2162,61 @@ class DatabaseManager:
         )
         with self.session_scope() as session:
             session.add(row)
+
+    # ────────────── 用户通知渠道配置 ──────────────
+
+    def get_user_notification_config(self, user_id: int) -> List[Dict[str, Any]]:
+        """获取用户的所有通知渠道配置项。"""
+        with self.session_scope() as session:
+            rows = session.execute(
+                select(UserNotificationConfig)
+                .where(UserNotificationConfig.user_id == user_id)
+                .order_by(UserNotificationConfig.key)
+            ).scalars().all()
+            return [
+                {"key": row.key, "value": row.value or "", "updated_at": row.updated_at.isoformat() if row.updated_at else None}
+                for row in rows
+            ]
+
+    def set_user_notification_config(self, user_id: int, items: List[Dict[str, str]]) -> int:
+        """批量设置用户通知渠道配置项（upsert）。返回更新/插入的条数。"""
+        count = 0
+        with self.session_scope() as session:
+            for item in items:
+                key = item.get("key", "").strip()
+                value = item.get("value", "")
+                if not key:
+                    continue
+                existing = session.execute(
+                    select(UserNotificationConfig).where(
+                        and_(
+                            UserNotificationConfig.user_id == user_id,
+                            UserNotificationConfig.key == key,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing:
+                    existing.value = value
+                    existing.updated_at = datetime.now()
+                else:
+                    session.add(UserNotificationConfig(user_id=user_id, key=key, value=value))
+                count += 1
+            session.commit()
+        return count
+
+    def delete_user_notification_config(self, user_id: int, key: str) -> bool:
+        """删除用户某一项通知配置。返回是否实际删除。"""
+        with self.session_scope() as session:
+            result = session.execute(
+                delete(UserNotificationConfig).where(
+                    and_(
+                        UserNotificationConfig.user_id == user_id,
+                        UserNotificationConfig.key == key,
+                    )
+                )
+            )
+            session.commit()
+            return result.rowcount > 0
 
     def get_llm_usage_summary(
         self,

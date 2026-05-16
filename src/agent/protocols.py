@@ -84,6 +84,20 @@ class AgentContext:
     # --- risk flags raised by RiskAgent ---
     risk_flags: List[Dict[str, Any]] = field(default_factory=list)
 
+    # --- Phase 1 reports (parallel data fetching) ---
+    phase1_reports: Dict[str, Any] = field(default_factory=dict)
+    # Keys: "technical", "fundamentals", "news", "sentiment"
+    # Each contains the analysis report from parallel agents
+
+    # --- Phase 2 bull-bear debate ---
+    bull_bear_debate: Dict[str, Any] = field(default_factory=dict)
+    # Keys: "bull_report", "bear_report", "bull_r2", "manager_decision"
+
+    # --- Phase 4 three-party risk assessment ---
+    risk_assessments: Dict[str, Any] = field(default_factory=dict)
+    # Keys: "aggressive", "conservative", "neutral"
+    # Each contains risk assessment from different stance
+
     # --- arbitrary metadata ---
     meta: Dict[str, Any] = field(default_factory=dict)
     # e.g. {"skills_requested": [...], "user_platform": "feishu"}
