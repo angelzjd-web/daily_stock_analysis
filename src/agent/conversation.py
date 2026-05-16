@@ -23,9 +23,9 @@ class ConversationSession:
     created_at: datetime = field(default_factory=datetime.now)
     last_active: datetime = field(default_factory=datetime.now)
 
-    def add_message(self, role: str, content: str):
+    def add_message(self, role: str, content: str, user_id: Optional[int] = None):
         """Add a message to the session history."""
-        get_db().save_conversation_message(self.session_id, role, content)
+        get_db().save_conversation_message(self.session_id, role, content, user_id=user_id)
         self.last_active = datetime.now()
 
     def update_context(self, key: str, value: Any):
@@ -60,10 +60,10 @@ class ConversationManager:
 
             return self._sessions[session_id]
 
-    def add_message(self, session_id: str, role: str, content: str):
+    def add_message(self, session_id: str, role: str, content: str, user_id: Optional[int] = None):
         """Add a message to a session."""
         session = self.get_or_create(session_id)
-        session.add_message(role, content)
+        session.add_message(role, content, user_id=user_id)
 
     def get_history(self, session_id: str) -> List[Dict[str, Any]]:
         """Get message history for a session."""

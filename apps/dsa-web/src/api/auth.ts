@@ -11,6 +11,7 @@ export type AuthStatusResponse = {
     username: string;
     role: 'admin' | 'user';
     email?: string;
+    pointsBalance?: number;
   } | null;
 };
 
@@ -20,6 +21,7 @@ export type UserInfo = {
   role: string;
   email?: string;
   isActive: boolean;
+  pointsBalance?: number;
   createdAt?: string;
 };
 
@@ -111,6 +113,7 @@ export const authApi = {
       isActive?: boolean;
       password?: string;
       passwordConfirm?: string;
+      pointsBalance?: number;
     }
   ): Promise<{ ok: boolean }> {
     const { data } = await apiClient.put(`/api/v1/auth/users/${userId}`, updates);
@@ -130,6 +133,18 @@ export const authApi = {
     const { data } = await apiClient.post(`/api/v1/auth/users/${userId}/reset-password`, {
       newPassword,
       newPasswordConfirm,
+    });
+    return data;
+  },
+
+  async setUserPoints(
+    userId: number,
+    balance: number,
+    reason?: string
+  ): Promise<{ ok: boolean; balance: number }> {
+    const { data } = await apiClient.post(`/api/v1/auth/users/${userId}/points`, {
+      balance,
+      reason,
     });
     return data;
   },

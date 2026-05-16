@@ -76,6 +76,7 @@ class User(Base):
     password_hash = Column(String(256), nullable=False)  # salt_b64:hash_b64
     role = Column(String(16), nullable=False, default='user', index=True)  # admin / user
     is_active = Column(Boolean, nullable=False, default=True, index=True)
+    points_balance = Column(Integer, nullable=False, default=0, server_default='0')
     created_at = Column(DateTime, default=datetime.now, index=True)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -93,8 +94,30 @@ class User(Base):
             'email': self.email,
             'role': self.role,
             'isActive': self.is_active,
+            'pointsBalance': self.points_balance or 0,
             'createdAt': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class PointTransaction(Base):
+    """积分变动记录表。"""
+
+    __tablename__ = 'point_transactions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False, index=True)
+    change = Column(Integer, nullable=False)           # 正数=增加, 负数=扣减
+    balance_after = Column(Integer, nullable=False)    # 变动后余额
+    type = Column(String(32), nullable=False)           # analysis/agent/admin_grant/admin_deduct
+    description = Column(String(256))
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_pt_user_created', 'user_id', 'created_at'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<PointTransaction(id={self.id}, user_id={self.user_id}, change={self.change})>"
 
 
 class StockDaily(Base):
@@ -1963,6 +1986,7 @@ class DatabaseManager:
         limit: int = 50,
         session_prefix: Optional[str] = None,
         extra_session_ids: Optional[List[str]] = None,
+        user_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         获取聊天会话列表（从 conversation_messages 聚合）
@@ -1974,6 +1998,7 @@ class DatabaseManager:
                 ``"telegram_12345"``).
             extra_session_ids: Optional exact session ids to include in
                 addition to the scoped prefix.
+            user_id: If provided, only return sessions belonging to this user.
 
         Returns:
             按最近活跃时间倒序的会话列表，每条包含 session_id, title, message_count, last_active
@@ -1995,13 +2020,17 @@ class DatabaseManager:
                     func.max(ConversationMessage.created_at).label("last_active"),
                 )
             )
-            conditions = []
+            # user_id is a mandatory AND filter (data isolation);
+            # session_prefix / exact_ids are additional OR-scoped filters.
+            if user_id is not None:
+                base = base.where(ConversationMessage.user_id == user_id)
+            or_conditions = []
             if normalized_prefix:
-                conditions.append(ConversationMessage.session_id.startswith(normalized_prefix))
+                or_conditions.append(ConversationMessage.session_id.startswith(normalized_prefix))
             if exact_ids:
-                conditions.append(ConversationMessage.session_id.in_(exact_ids))
-            if conditions:
-                base = base.where(or_(*conditions))
+                or_conditions.append(ConversationMessage.session_id.in_(exact_ids))
+            if or_conditions:
+                base = base.where(or_(*or_conditions))
             stmt = (
                 base
                 .group_by(ConversationMessage.session_id)
@@ -2036,7 +2065,7 @@ class DatabaseManager:
                 })
             return results
 
-    def get_conversation_messages(self, session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_conversation_messages(self, session_id: str, limit: int = 100, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         获取单个会话的完整消息列表（用于前端恢复历史）
         """
@@ -2044,9 +2073,10 @@ class DatabaseManager:
             stmt = (
                 select(ConversationMessage)
                 .where(ConversationMessage.session_id == session_id)
-                .order_by(ConversationMessage.created_at)
-                .limit(limit)
             )
+            if user_id is not None:
+                stmt = stmt.where(ConversationMessage.user_id == user_id)
+            stmt = stmt.order_by(ConversationMessage.created_at).limit(limit)
             messages = session.execute(stmt).scalars().all()
             return [
                 {
@@ -2058,18 +2088,23 @@ class DatabaseManager:
                 for msg in messages
             ]
 
-    def delete_conversation_session(self, session_id: str) -> int:
+    def delete_conversation_session(self, session_id: str, user_id: Optional[int] = None) -> int:
         """
         删除指定会话的所有消息
+
+        Args:
+            session_id: 会话 ID
+            user_id: 如果提供，只删除属于该用户的会话消息
 
         Returns:
             删除的消息数
         """
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            if user_id is not None:
+                conditions.append(ConversationMessage.user_id == user_id)
             result = session.execute(
-                delete(ConversationMessage).where(
-                    ConversationMessage.session_id == session_id
-                )
+                delete(ConversationMessage).where(and_(*conditions))
             )
             return result.rowcount
 
@@ -2104,6 +2139,7 @@ class DatabaseManager:
         self,
         from_dt: datetime,
         to_dt: datetime,
+        user_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Return aggregated token usage between from_dt and to_dt.
 
@@ -2113,10 +2149,13 @@ class DatabaseManager:
           by_model:     list of {model, calls, total_tokens}
         """
         with self.session_scope() as session:
-            base_filter = and_(
+            conditions = [
                 LLMUsage.called_at >= from_dt,
                 LLMUsage.called_at <= to_dt,
-            )
+            ]
+            if user_id is not None:
+                conditions.append(LLMUsage.user_id == user_id)
+            base_filter = and_(*conditions)
 
             # Overall totals
             totals = session.execute(

@@ -8,11 +8,11 @@ import { ApiErrorAlert, Badge, Button, ConfirmDialog, EmptyState, InlineAlert, S
 import { getParsedApiError } from '../api/error';
 import type { SkillInfo } from '../api/agent';
 import { DashboardStateBlock } from '../components/dashboard';
-import {
-  useAgentChatStore,
+import { useAgentChatStore,
   type Message,
   type ProgressStep,
 } from '../stores/agentChatStore';
+import { useAuth } from '../contexts/AuthContext';
 import { downloadSession, formatSessionAsMarkdown } from '../utils/chatExport';
 import type { ChatFollowUpContext } from '../utils/chatFollowUp';
 import {
@@ -49,6 +49,7 @@ const getMessageSkillLabel = (msg: Message): string => getMessageSkillNames(msg)
 
 const ChatPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { authEnabled, currentUser, refreshPoints } = useAuth();
   const [input, setInput] = useState('');
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
@@ -57,6 +58,7 @@ const ChatPage: React.FC = () => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [pointsWarning, setPointsWarning] = useState(false);
   const [isFollowUpContextLoading, setIsFollowUpContextLoading] = useState(false);
   const [sendToast, setSendToast] = useState<{
     type: 'success' | 'error';
@@ -295,6 +297,13 @@ const ChatPage: React.FC = () => {
     async (overrideMessage?: string, overrideSkillIds?: string[]) => {
       const msgText = (overrideMessage ?? input).trim();
       if (!msgText || loading) return;
+
+      if (authEnabled && currentUser && (currentUser.pointsBalance ?? 0) < 20) {
+        setPointsWarning(true);
+        return;
+      }
+      setPointsWarning(false);
+
       const usedSkillIds = normalizeSelectedSkillIds(overrideSkillIds ?? selectedSkillIds);
       const usedSkillNames = usedSkillIds.length > 0 ? getSkillNames(usedSkillIds) : ['通用'];
 
@@ -314,8 +323,9 @@ const ChatPage: React.FC = () => {
         skillNames: usedSkillNames,
         skillName: usedSkillNames.join('、'),
       });
+      void refreshPoints();
     },
-    [getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream],
+    [authEnabled, currentUser, getSkillNames, input, loading, normalizeSelectedSkillIds, requestScrollToBottom, selectedSkillIds, sessionId, startStream, refreshPoints],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -951,6 +961,14 @@ const ChatPage: React.FC = () => {
           <div className="border-t border-white/6 bg-card/88 p-4 md:p-6 relative z-20">
             <div className="space-y-3">
               {chatError ? <ApiErrorAlert error={chatError} /> : null}
+              {pointsWarning ? (
+                <InlineAlert
+                  variant="danger"
+                  title="积分不足"
+                  message="当前积分余额不足，无法发起对话。请联系管理员充值。"
+                  className="rounded-xl px-3 py-2 text-xs shadow-none"
+                />
+              ) : null}
               {isFollowUpContextLoading ? (
                 <InlineAlert
                   variant="info"

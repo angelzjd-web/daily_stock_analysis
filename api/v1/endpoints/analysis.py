@@ -235,6 +235,24 @@ def trigger_analysis(
     """
     # 校验请求参数
     db_user_id = get_current_user_id(http_request)
+
+    # Check points balance before proceeding
+    if db_user_id:
+        from src.auth import is_auth_enabled as _is_auth_enabled
+        if _is_auth_enabled():
+            from src.points import check_points_sufficient, COST_ANALYSIS
+            sufficient, balance = check_points_sufficient(db_user_id, COST_ANALYSIS)
+            if not sufficient:
+                raise HTTPException(
+                    status_code=402,
+                    detail={
+                        "error": "insufficient_points",
+                        "message": f"积分不足，当前余额 {balance}，需要 {COST_ANALYSIS} 积分",
+                        "balance": balance,
+                        "required": COST_ANALYSIS,
+                    }
+                )
+
     stock_codes = []
     if request.stock_code:
         stock_codes.append(request.stock_code)
@@ -462,6 +480,13 @@ def _handle_sync_analysis(
                 "message": f"分析过程发生错误: {str(e)}"
             }
         )
+    finally:
+        # Deduct points after successful analysis (even if balance goes negative)
+        if db_user_id:
+            from src.auth import is_auth_enabled
+            if is_auth_enabled():
+                from src.points import deduct_points, COST_ANALYSIS
+                deduct_points(db_user_id, COST_ANALYSIS, "analysis", f"分析 {stock_code}")
 
 
 # ============================================================
@@ -543,6 +568,7 @@ def trigger_market_review(
     description="获取当前所有分析任务，可按状态筛选"
 )
 def get_task_list(
+    request: Request,
     status: Optional[str] = Query(
         None,
         description="筛选状态：pending, processing, completed, failed（支持逗号分隔多个）"
@@ -551,18 +577,25 @@ def get_task_list(
 ) -> TaskListResponse:
     """
     获取分析任务列表
-    
+
     Args:
         status: 状态筛选（可选）
         limit: 返回数量限制
-        
+
     Returns:
         TaskListResponse: 任务列表响应
     """
+    # Extract user_id for multi-user isolation
+    db_user_id = None
+    try:
+        db_user_id = get_current_user_id(request)
+    except Exception:
+        pass
+
     task_queue = get_task_queue()
-    
-    # 获取所有任务
-    all_tasks = task_queue.list_all_tasks(limit=limit)
+
+    # 获取当前用户的任务
+    all_tasks = task_queue.list_all_tasks(limit=limit, user_id=db_user_id)
     
     # 状态筛选
     if status:
@@ -570,7 +603,7 @@ def get_task_list(
         all_tasks = [t for t in all_tasks if t.status.value in status_list]
     
     # 统计信息
-    stats = task_queue.get_task_stats()
+    stats = task_queue.get_task_stats(user_id=db_user_id)
     
     # 转换为 Schema
     task_infos = [
@@ -612,10 +645,10 @@ def get_task_list(
     summary="任务状态 SSE 流",
     description="通过 Server-Sent Events 实时推送任务状态变化"
 )
-async def task_stream():
+async def task_stream(http_request: Request):
     """
     SSE 任务状态流
-    
+
     事件类型：
     - connected: 连接成功
     - task_created: 新任务创建
@@ -624,19 +657,26 @@ async def task_stream():
     - task_completed: 任务完成
     - task_failed: 任务失败
     - heartbeat: 心跳（每 30 秒）
-    
+
     Returns:
         StreamingResponse: SSE 事件流
     """
+    # Extract user_id for multi-user isolation
+    db_user_id = None
+    try:
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
     async def event_generator():
         task_queue = get_task_queue()
         event_queue: asyncio.Queue = asyncio.Queue()
-        
+
         # 发送连接成功事件
         yield _format_sse_event("connected", {"message": "Connected to task stream"})
-        
-        # 发送当前进行中的任务
-        pending_tasks = task_queue.list_pending_tasks()
+
+        # 发送当前进行中的任务（按用户过滤）
+        pending_tasks = task_queue.list_pending_tasks(user_id=db_user_id)
         for task in pending_tasks:
             yield _format_sse_event("task_created", task.to_dict())
         
@@ -648,6 +688,13 @@ async def task_stream():
                 try:
                     # 等待事件，超时发送心跳
                     event = await asyncio.wait_for(event_queue.get(), timeout=30)
+                    # Filter events by user_id for multi-user isolation
+                    if db_user_id is not None:
+                        event_data = event.get("data", {})
+                        event_user_id = event_data.get("user_id") if isinstance(event_data, dict) else None
+                        # Only forward events belonging to this user (or events without user_id like heartbeat)
+                        if event_user_id is not None and event_user_id != db_user_id:
+                            continue
                     yield _format_sse_event(event["type"], event["data"])
                 except asyncio.TimeoutError:
                     # 心跳
@@ -699,26 +746,36 @@ def _format_sse_event(event_type: str, data: Dict[str, Any]) -> str:
     summary="查询分析任务状态",
     description="根据 task_id 查询单个任务的状态"
 )
-def get_analysis_status(task_id: str) -> TaskStatus:
+def get_analysis_status(task_id: str, request: Request) -> TaskStatus:
     """
     查询分析任务状态
-    
+
     优先从任务队列查询，如果不存在则从数据库查询历史记录
-    
+
     Args:
         task_id: 任务 ID
-        
+
     Returns:
         TaskStatus: 任务状态信息
-        
+
     Raises:
         HTTPException: 404 - 任务不存在
     """
+    # Extract user_id for ownership verification
+    db_user_id = None
+    try:
+        db_user_id = get_current_user_id(request)
+    except Exception:
+        pass
+
     # 1. 先从任务队列查询
     task_queue = get_task_queue()
     task = task_queue.get_task(task_id)
-    
+
     if task:
+        # Verify ownership: only allow access to own tasks
+        if db_user_id is not None and task.user_id is not None and task.user_id != db_user_id:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": "任务不存在"})
         result: Optional[AnalysisResultResponse] = None
         market_review_report = None
 

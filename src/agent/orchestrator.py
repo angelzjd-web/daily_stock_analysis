@@ -301,12 +301,20 @@ class AgentOrchestrator:
         session_id: str,
         progress_callback: Optional[Callable] = None,
         context: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None,
     ) -> "AgentResult":
         """Run the pipeline in chat mode (free-form answer, no dashboard parse).
 
         Conversation history is managed externally by the caller (via
         ``conversation_manager``); the orchestrator focuses on multi-agent
         coordination.
+
+        Args:
+            message: The user's chat message.
+            session_id: The conversation session ID.
+            progress_callback: Optional callback for streaming progress events.
+            context: Optional context dict from previous analysis for data reuse.
+            user_id: Optional database user ID for multi-user data isolation.
         """
         from src.agent.executor import AgentResult
         from src.agent.conversation import conversation_manager
@@ -321,7 +329,7 @@ class AgentOrchestrator:
             ctx.meta["conversation_history"] = history
 
         # Persist user turn
-        conversation_manager.add_message(session_id, "user", message)
+        conversation_manager.add_message(session_id, "user", message, user_id=user_id)
 
         orch_result = self._execute_pipeline(
             ctx,
@@ -331,11 +339,12 @@ class AgentOrchestrator:
 
         # Persist assistant response
         if orch_result.success:
-            conversation_manager.add_message(session_id, "assistant", orch_result.content)
+            conversation_manager.add_message(session_id, "assistant", orch_result.content, user_id=user_id)
         else:
             conversation_manager.add_message(
                 session_id, "assistant",
                 f"[分析失败] {orch_result.error or '未知错误'}",
+                user_id=user_id,
             )
 
         return AgentResult(

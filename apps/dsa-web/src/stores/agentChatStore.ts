@@ -99,6 +99,8 @@ interface AgentChatActions {
   switchSession: (targetSessionId: string) => Promise<void>;
   startNewChat: () => void;
   startStream: (payload: ChatStreamRequest, meta?: StreamMeta) => Promise<void>;
+  /** Reset all chat state (call on logout / user switch to avoid stale data). */
+  resetStore: () => void;
 }
 
 const getInitialSessionId = (): string =>
@@ -210,6 +212,24 @@ export const useAgentChatStore = create<AgentChatState & AgentChatActions>((set,
       abortController: null,
     });
     localStorage.setItem(STORAGE_KEY_SESSION, newId);
+  },
+
+  resetStore: () => {
+    get().abortController?.abort();
+    localStorage.removeItem(STORAGE_KEY_SESSION);
+    const newId = generateUUID();
+    set({
+      messages: [],
+      loading: false,
+      progressSteps: [],
+      sessionId: newId,
+      sessions: [],
+      sessionsLoading: false,
+      chatError: null,
+      completionBadge: false,
+      hasInitialLoad: false,
+      abortController: null,
+    });
   },
 
   startStream: async (payload, meta) => {

@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useState } from 'react';
-import { Plus, Trash2, RefreshCw, Shield, User, ToggleLeft, ToggleRight } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Shield, User, ToggleLeft, ToggleRight, Coins } from 'lucide-react';
 import { authApi, type UserInfo } from '../../api/auth';
 import { getParsedApiError } from '../../api/error';
 import { Button } from '../common';
@@ -31,6 +31,12 @@ export const UserManagementCard: React.FC<UserManagementCardProps> = ({ classNam
   const [resetPassword, setResetPassword] = useState('');
   const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
   const [isResetting, setIsResetting] = useState(false);
+
+  // Edit points
+  const [editPointsUserId, setEditPointsUserId] = useState<number | null>(null);
+  const [editPointsValue, setEditPointsValue] = useState('');
+  const [editPointsReason, setEditPointsReason] = useState('');
+  const [isSavingPoints, setIsSavingPoints] = useState(false);
 
   const loadUsers = useCallback(async () => {
     setIsLoading(true);
@@ -144,6 +150,30 @@ export const UserManagementCard: React.FC<UserManagementCardProps> = ({ classNam
     } catch (err) {
       const parsed = getParsedApiError(err);
       setError(parsed.message || '更新用户角色失败');
+    }
+  };
+
+  const handleSavePoints = async () => {
+    if (editPointsUserId === null) return;
+    const balance = parseInt(editPointsValue, 10);
+    if (isNaN(balance)) {
+      setError('请输入有效的积分数值');
+      return;
+    }
+    setIsSavingPoints(true);
+    clearMessages();
+    try {
+      await authApi.setUserPoints(editPointsUserId, balance, editPointsReason || undefined);
+      setSuccessMsg('积分修改成功');
+      setEditPointsUserId(null);
+      setEditPointsValue('');
+      setEditPointsReason('');
+      await loadUsers();
+    } catch (err) {
+      const parsed = getParsedApiError(err);
+      setError(parsed.message || '修改积分失败');
+    } finally {
+      setIsSavingPoints(false);
     }
   };
 
@@ -331,6 +361,62 @@ export const UserManagementCard: React.FC<UserManagementCardProps> = ({ classNam
           </div>
         )}
 
+        {/* Edit points dialog */}
+        {editPointsUserId !== null && (
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+            <h4 className="text-sm font-medium text-foreground">修改积分</h4>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs text-muted-text">积分余额</label>
+                <input
+                  type="number"
+                  value={editPointsValue}
+                  onChange={(e) => setEditPointsValue(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-text focus:border-[hsl(var(--primary))] focus:outline-none"
+                  placeholder="输入新的积分值"
+                  disabled={isSavingPoints}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-text">备注（可选）</label>
+                <input
+                  type="text"
+                  value={editPointsReason}
+                  onChange={(e) => setEditPointsReason(e.target.value)}
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-text focus:border-[hsl(var(--primary))] focus:outline-none"
+                  placeholder="修改原因"
+                  disabled={isSavingPoints}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="settings-primary"
+                onClick={() => void handleSavePoints()}
+                disabled={isSavingPoints}
+                isLoading={isSavingPoints}
+                loadingText="保存中..."
+              >
+                确认修改
+              </Button>
+              <Button
+                type="button"
+                variant="settings-secondary"
+                onClick={() => {
+                  setEditPointsUserId(null);
+                  setEditPointsValue('');
+                  setEditPointsReason('');
+                  clearMessages();
+                }}
+                disabled={isSavingPoints}
+              >
+                取消
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* User list */}
         {isLoading ? (
           <div className="py-8 text-center text-sm text-muted-text">加载用户列表...</div>
@@ -343,6 +429,7 @@ export const UserManagementCard: React.FC<UserManagementCardProps> = ({ classNam
                 <tr className="border-b border-border/50 text-left text-xs uppercase tracking-wider text-muted-text">
                   <th className="px-3 py-2">用户名</th>
                   <th className="px-3 py-2">角色</th>
+                  <th className="px-3 py-2">积分</th>
                   <th className="px-3 py-2">状态</th>
                   <th className="px-3 py-2">创建时间</th>
                   <th className="px-3 py-2 text-right">操作</th>
@@ -372,6 +459,14 @@ export const UserManagementCard: React.FC<UserManagementCardProps> = ({ classNam
                       </select>
                     </td>
                     <td className="px-3 py-3">
+                      <div className="flex items-center gap-1">
+                        <Coins className="h-3.5 w-3.5 text-amber-500" />
+                        <span className={`text-xs font-medium ${(user.pointsBalance ?? 0) < 0 ? 'text-red-500' : 'text-foreground'}`}>
+                          {user.pointsBalance ?? 0}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
                       <button
                         type="button"
                         onClick={() => void handleToggleActive(user.id, user.isActive, user.username)}
@@ -396,6 +491,19 @@ export const UserManagementCard: React.FC<UserManagementCardProps> = ({ classNam
                     </td>
                     <td className="px-3 py-3 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditPointsUserId(user.id);
+                            setEditPointsValue(String(user.pointsBalance ?? 0));
+                            setEditPointsReason('');
+                            clearMessages();
+                          }}
+                          className="rounded-lg px-2 py-1 text-xs text-amber-600 hover:bg-amber-500/10 transition-colors"
+                          title="修改积分"
+                        >
+                          <Coins className="h-3.5 w-3.5" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => {

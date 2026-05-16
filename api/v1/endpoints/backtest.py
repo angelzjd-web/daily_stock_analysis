@@ -7,9 +7,9 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from api.deps import get_database_manager
+from api.deps import get_current_user_id, get_database_manager
 from api.v1.schemas.backtest import (
     BacktestRunRequest,
     BacktestRunResponse,
@@ -52,9 +52,11 @@ def _validate_analysis_date_range(
 )
 def run_backtest(
     request: BacktestRunRequest,
+    http_request: Request,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> BacktestRunResponse:
     try:
+        db_user_id = get_current_user_id(http_request)
         service = BacktestService(db_manager)
         stats = service.run_backtest(
             code=request.code,
@@ -62,6 +64,7 @@ def run_backtest(
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
             limit=request.limit,
+            user_id=db_user_id,
         )
         return BacktestRunResponse(**stats)
     except Exception as exc:
@@ -89,10 +92,12 @@ def get_backtest_results(
     analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
     page: int = Query(1, ge=1, description="页码"),
     limit: int = Query(20, ge=1, le=200, description="每页数量"),
+    http_request: Request = None,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> BacktestResultsResponse:
     try:
         _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        db_user_id = get_current_user_id(http_request) if http_request else None
         service = BacktestService(db_manager)
         data = service.get_recent_evaluations(
             code=code,
@@ -101,6 +106,7 @@ def get_backtest_results(
             page=page,
             analysis_date_from=analysis_date_from,
             analysis_date_to=analysis_date_to,
+            user_id=db_user_id,
         )
         items = [BacktestResultItem(**item) for item in data.get("items", [])]
         return BacktestResultsResponse(
@@ -133,10 +139,12 @@ def get_overall_performance(
     eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
     analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
     analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    http_request: Request = None,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> PerformanceMetrics:
     try:
         _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        db_user_id = get_current_user_id(http_request) if http_request else None
         service = BacktestService(db_manager)
         summary = service.get_summary(
             scope="overall",
@@ -144,6 +152,7 @@ def get_overall_performance(
             eval_window_days=eval_window_days,
             analysis_date_from=analysis_date_from,
             analysis_date_to=analysis_date_to,
+            user_id=db_user_id,
         )
         if summary is None:
             raise HTTPException(
@@ -181,10 +190,12 @@ def get_stock_performance(
     eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
     analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
     analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    http_request: Request = None,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> PerformanceMetrics:
     try:
         _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        db_user_id = get_current_user_id(http_request) if http_request else None
         service = BacktestService(db_manager)
         summary = service.get_summary(
             scope="stock",
@@ -192,6 +203,7 @@ def get_stock_performance(
             eval_window_days=eval_window_days,
             analysis_date_from=analysis_date_from,
             analysis_date_to=analysis_date_to,
+            user_id=db_user_id,
         )
         if summary is None:
             raise HTTPException(

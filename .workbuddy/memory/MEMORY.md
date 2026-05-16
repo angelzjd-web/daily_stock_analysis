@@ -15,10 +15,22 @@
 - 前端：AuthContext + LoginPage + UserManagementCard + AdminRoute
 
 ### 数据隔离实现路径
-- **已完成**：history端点（列表/详情/删除/新闻/Markdown），analysis端点（同步/异步分析→Pipeline→save_analysis_history）
-- **未完成**：portfolio/backtest/usage端点的用户隔离（这些模块的Service/Storage层尚未添加user_id参数）
+- **全部完成（25/25 端点已隔离）**：
+  - history端点（列表/详情/删除/新闻/Markdown）
+  - analysis端点（同步/异步分析→Pipeline→save_analysis_history）
+  - agent聊天会话（sessions/messages/delete 全链路 user_id 隔离，含 executor→conversation→storage + orchestrator）
+  - analysis任务列表（tasks/stream/status 按 user_id 过滤，TaskInfo 新增 user_id 字段）
+  - portfolio模块（全部 16 端点通过 owner_id 隔离，服务层 13 方法加 owner_id 参数）
+  - backtest模块（4 端点：run/results/performance/performance/{code}，repo 层通过 AnalysisHistory.user_id 子查询过滤）
+  - usage模块（1 端点：summary，LLMUsage.user_id 直接过滤）
+- 关键调用链5：backtest.py → get_current_user_id(http_request) → BacktestService(user_id=) → BacktestRepo._build_result_conditions(user_id=) → 子查询 AnalysisHistory.id WHERE user_id=
+- 关键调用链6：usage.py → get_current_user_id(http_request) → db_manager.get_llm_usage_summary(user_id=) → LLMUsage.user_id == user_id
 - 关键调用链：analysis.py → AnalysisService.analyze_stock(db_user_id=) → StockAnalysisPipeline(db_user_id=) → save_analysis_history(user_id=)
 - 关键调用链2：history.py → HistoryService.get_history_list(user_id=) → get_analysis_history_paginated(user_id=)
+- 关键调用链3：agent.py → executor.chat(user_id=db_user_id) → conversation_manager.add_message(user_id=) → save_conversation_message(user_id=)
+- 关键调用链3b：orchestrator.chat(user_id=) → 同上（multi 模式下也隔离）
+- 关键调用链4：portfolio.py → _get_owner_id(http_request) → str(db_user_id) 作为 owner_id
+- **前端隔离**：AuthContext 检测 currentUser.id 变化时调用 agentChatStore.resetStore()，清除 sessions/messages/localStorage
 
 ### 环境配置
 - `.env` 中 `ADMIN_AUTH_ENABLED=true` 启用认证
@@ -34,6 +46,17 @@
 - 密码修改：✅
 - 禁用用户无法登录：✅
 - 前端构建：✅
+
+## 积分系统 (2026-05-16 完成)
+- 普通分析扣 5 积分，Agent 对话扣 20 积分
+- 所有账户默认 0 积分，积分不足阻断操作（余额 < 消耗额则拒绝，返回 402）
+- 管理员可在后台修改每个账户积分
+- 后端模块：`src/points.py`（积分服务，含 `check_points_sufficient` 预检查）、`src/storage.py`（PointTransaction模型）
+- API端点：`POST /auth/users/{id}/points`（管理员设置积分）、`GET /points/balance`（查余额）、`GET /points/transactions`（查变动记录）
+- 前端：SidebarNav显示积分余额、UserManagementCard增加积分列和修改按钮、分析和聊天前本地预检查积分
+- 关键决策：管理员也扣积分、积分不足阻断操作（402 insufficient_points）、认证关闭时不扣积分
+- agent端点修复：agent_chat/agent_chat_stream 新增 Request 参数以获取 user_id
+- 积分实时刷新：AuthContext.refreshPoints() + useDashboardLifecycle.onPointsChanged + ChatPage.handleSend后调refreshPoints
 
 ## 东方财富妙想 API 数据源 (2026-05-15 完成)
 - 替换所有原有数据源（akshare/tushare/baostock/efinance/pytdx/yfinance/longbridge）为东方财富妙想API

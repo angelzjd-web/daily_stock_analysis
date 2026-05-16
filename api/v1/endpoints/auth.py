@@ -94,6 +94,7 @@ class AdminUpdateUserRequest(BaseModel):
     is_active: bool | None = Field(default=None, alias="isActive")
     password: str | None = Field(default=None)
     password_confirm: str | None = Field(default=None, alias="passwordConfirm")
+    points_balance: int | None = Field(default=None, alias="pointsBalance")
 
 
 class AdminResetPasswordRequest(BaseModel):
@@ -197,6 +198,7 @@ def _get_auth_status_dict(request: Request | None = None) -> dict:
                         "username": user["username"],
                         "role": user["role"],
                         "email": user["email"],
+                        "pointsBalance": user.get("points_balance", 0),
                     }
 
     if auth_enabled:
@@ -438,16 +440,9 @@ async def auth_register(request: Request, body: RegisterRequest):
     has_admin = any(u["role"] == "admin" for u in all_users)
     role = "admin" if not has_admin else "user"
 
-    # If users already exist, check if current user is admin creating new user
-    # For open registration, default to "user" role
+    # Open registration: anyone can register as "user"
     if has_admin:
-        # Only admin can create new users via register endpoint
-        current = _get_current_user(request)
-        if not current or current["role"] != "admin":
-            return JSONResponse(
-                status_code=403,
-                content={"error": "forbidden", "message": "只有管理员可以创建新用户"},
-            )
+        role = "user"
 
     user_id, err = create_user(username, password, role=role, email=body.email)
     if err:
@@ -612,6 +607,8 @@ async def admin_update_user(request: Request, user_id: int, body: AdminUpdateUse
         updates["email"] = body.email
     if body.is_active is not None:
         updates["is_active"] = body.is_active
+    if body.points_balance is not None:
+        updates["points_balance"] = body.points_balance
 
     # Password reset
     if body.password is not None:
@@ -700,3 +697,32 @@ async def admin_reset_password(request: Request, user_id: int, body: AdminResetP
         )
 
     return JSONResponse(content={"ok": True})
+
+
+class AdminSetPointsRequest(BaseModel):
+    """Admin sets user points."""
+    model_config = {"populate_by_name": True}
+    balance: int = Field(description="New points balance")
+    reason: str | None = Field(default=None, description="Reason for change")
+
+
+@router.post(
+    "/users/{user_id}/points",
+    summary="Set user points (admin only)",
+    description="Admin endpoint to set a user's points balance.",
+)
+async def admin_set_points_endpoint(request: Request, user_id: int, body: AdminSetPointsRequest):
+    """Set a user's points balance. Admin only."""
+    err_resp = _require_admin(request)
+    if err_resp:
+        return err_resp
+
+    from src.points import admin_set_points as _set_points
+    err = _set_points(user_id, body.balance, body.reason or "")
+    if err:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "set_points_failed", "message": err},
+        )
+
+    return JSONResponse(content={"ok": True, "balance": body.balance})

@@ -2,13 +2,16 @@ import type React from 'react';
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { createParsedApiError, getParsedApiError, type ParsedApiError } from '../api/error';
 import { authApi } from '../api/auth';
+import { pointsApi } from '../api/points';
 import { useStockPoolStore } from '../stores';
+import { useAgentChatStore } from '../stores/agentChatStore';
 
 type CurrentUser = {
   id: number;
   username: string;
   role: 'admin' | 'user';
   email?: string;
+  pointsBalance?: number;
 };
 
 type AuthContextValue = {
@@ -30,6 +33,7 @@ type AuthContextValue = {
   ) => Promise<{ success: boolean; error?: ParsedApiError }>;
   logout: () => Promise<void>;
   refreshStatus: () => Promise<void>;
+  refreshPoints: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -70,7 +74,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPasswordSet(status.passwordSet ?? false);
       setPasswordChangeable(status.passwordChangeable ?? false);
       setSetupState(status.setupState);
-      setCurrentUser(status.currentUser ?? null);
+
+      // Detect user switch and reset chat store to avoid showing stale data
+      // from a different user.  Access previous value via the setter callback
+      // so we don't need a separate ref.
+      setCurrentUser((prev) => {
+        const next = status.currentUser ?? null;
+        if (prev && next && prev.id !== next.id) {
+          useAgentChatStore.getState().resetStore();
+        } else if (prev && !next) {
+          // Logged out
+          useAgentChatStore.getState().resetStore();
+        }
+        return next;
+      });
+
       if (status.authEnabled && !status.loggedIn) {
         useStockPoolStore.getState().resetDashboardState();
       }
@@ -83,6 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSetupState('no_password');
       setCurrentUser(null);
       useStockPoolStore.getState().resetDashboardState();
+      useAgentChatStore.getState().resetStore();
     } finally {
       setIsLoading(false);
     }
@@ -142,6 +161,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     []
   );
 
+  const refreshPoints = useCallback(async () => {
+    if (!loggedIn) return;
+    try {
+      const { balance } = await pointsApi.getBalance();
+      setCurrentUser((prev) =>
+        prev ? { ...prev, pointsBalance: balance } : prev,
+      );
+    } catch {
+      // Silently ignore — sidebar will show stale balance until next refresh
+    }
+  }, [loggedIn]);
+
   const logout = useCallback(async () => {
     let logoutError: unknown = null;
     try {
@@ -174,6 +205,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         changePassword,
         logout,
         refreshStatus: fetchStatus,
+        refreshPoints,
       }}
     >
       {children}

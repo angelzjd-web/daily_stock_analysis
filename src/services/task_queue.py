@@ -71,6 +71,7 @@ class TaskInfo:
     completed_at: Optional[datetime] = None
     original_query: Optional[str] = None
     selection_source: Optional[str] = None
+    user_id: Optional[int] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -88,6 +89,7 @@ class TaskInfo:
             "error": self.error,
             "original_query": self.original_query,
             "selection_source": self.selection_source,
+            "user_id": self.user_id,
         }
     
     def copy(self) -> 'TaskInfo':
@@ -107,6 +109,7 @@ class TaskInfo:
             completed_at=self.completed_at,
             original_query=self.original_query,
             selection_source=self.selection_source,
+            user_id=self.user_id,
         )
 
 
@@ -300,6 +303,7 @@ class AnalysisTaskQueue:
         selection_source: Optional[str] = None,
         report_type: str = "detailed",
         force_refresh: bool = False,
+        db_user_id: Optional[int] = None,
     ) -> TaskInfo:
         """
         Submit a single analysis task.
@@ -311,6 +315,7 @@ class AnalysisTaskQueue:
             selection_source: Optional source label
             report_type: Report type
             force_refresh: Whether to bypass cache
+            db_user_id: Optional database user ID for multi-user isolation
 
         Returns:
             TaskInfo: Accepted task information
@@ -329,6 +334,7 @@ class AnalysisTaskQueue:
             selection_source=selection_source,
             report_type=report_type,
             force_refresh=force_refresh,
+            db_user_id=db_user_id,
         )
         if duplicates:
             raise duplicates[0]
@@ -380,6 +386,7 @@ class AnalysisTaskQueue:
                     report_type=report_type,
                     original_query=original_query,
                     selection_source=selection_source,
+                    user_id=db_user_id,
                 )
                 self._tasks[task_id] = task_info
                 self._analyzing_stocks[dedupe_key] = task_id
@@ -477,53 +484,68 @@ class AnalysisTaskQueue:
             task = self._tasks.get(task_id)
             return task.copy() if task else None
     
-    def list_pending_tasks(self) -> List[TaskInfo]:
+    def list_pending_tasks(self, user_id: Optional[int] = None) -> List[TaskInfo]:
         """
         获取所有进行中的任务（pending + processing）
-        
+
+        Args:
+            user_id: If provided, only return tasks belonging to this user.
+
         Returns:
             任务列表（副本）
         """
         with self._data_lock:
-            return [
+            tasks = [
                 task.copy() for task in self._tasks.values()
                 if task.status in (TaskStatus.PENDING, TaskStatus.PROCESSING)
+                and (user_id is None or task.user_id == user_id)
             ]
-    
-    def list_all_tasks(self, limit: int = 50) -> List[TaskInfo]:
+            return tasks
+
+    def list_all_tasks(self, limit: int = 50, user_id: Optional[int] = None) -> List[TaskInfo]:
         """
         获取所有任务（按创建时间倒序）
-        
+
         Args:
             limit: 返回数量限制
-            
+            user_id: If provided, only return tasks belonging to this user.
+
         Returns:
             任务列表（副本）
         """
         with self._data_lock:
+            all_tasks = list(self._tasks.values())
+            if user_id is not None:
+                all_tasks = [t for t in all_tasks if t.user_id == user_id]
             tasks = sorted(
-                self._tasks.values(),
+                all_tasks,
                 key=lambda t: t.created_at,
                 reverse=True
             )
             return [t.copy() for t in tasks[:limit]]
-    
-    def get_task_stats(self) -> Dict[str, int]:
+
+    def get_task_stats(self, user_id: Optional[int] = None) -> Dict[str, int]:
         """
         获取任务统计信息
-        
+
+        Args:
+            user_id: If provided, only count tasks belonging to this user.
+
         Returns:
             统计信息字典
         """
         with self._data_lock:
+            tasks = self._tasks.values()
+            if user_id is not None:
+                tasks = [t for t in tasks if t.user_id == user_id]
             stats = {
-                "total": len(self._tasks),
+                "total": len(tasks) if user_id is not None else len(self._tasks),
                 "pending": 0,
                 "processing": 0,
                 "completed": 0,
                 "failed": 0,
             }
-            for task in self._tasks.values():
+            for task in (tasks if user_id is not None else self._tasks.values()):
                 stats[task.status.value] = stats.get(task.status.value, 0) + 1
             return stats
 
@@ -637,7 +659,17 @@ class AnalysisTaskQueue:
                 
                 self._broadcast_event("task_completed", task.to_dict())
                 logger.info(f"[TaskQueue] 任务完成: {task_id} ({stock_code})")
-                
+
+                # Deduct points after successful async analysis
+                if db_user_id:
+                    try:
+                        from src.auth import is_auth_enabled
+                        if is_auth_enabled():
+                            from src.points import deduct_points, COST_ANALYSIS
+                            deduct_points(db_user_id, COST_ANALYSIS, "analysis", f"分析 {stock_code}")
+                    except Exception as pts_err:
+                        logger.warning("Failed to deduct points for task %s: %s", task_id, pts_err)
+
                 # 清理过期任务
                 self._cleanup_old_tasks()
                 

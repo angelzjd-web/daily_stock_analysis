@@ -54,6 +54,22 @@ const LoginPage: React.FC = () => {
     setError(null);
 
     if (mode === 'register' || isFirstTime) {
+      if (!username.trim()) {
+        setError('请输入用户名');
+        return;
+      }
+      if (username.trim().length < 3) {
+        setError('用户名至少需要 3 个字符');
+        return;
+      }
+      if (!password) {
+        setError('请输入密码');
+        return;
+      }
+      if (password.length < 6) {
+        setError('密码至少需要 6 个字符');
+        return;
+      }
       if (password !== passwordConfirm) {
         setError('两次输入的密码不一致');
         return;
@@ -288,7 +304,7 @@ const LoginPage: React.FC = () => {
                     }}
                     className="ml-1 text-sm font-medium text-[var(--login-accent-text)] hover:underline"
                   >
-                    {isRegisterMode ? '去登录' : '联系管理员注册'}
+                    {isRegisterMode ? '去登录' : '注册账户'}
                   </button>
                 </p>
               </div>

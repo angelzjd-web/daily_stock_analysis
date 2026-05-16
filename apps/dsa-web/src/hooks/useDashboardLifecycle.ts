@@ -9,6 +9,7 @@ type UseDashboardLifecycleOptions = {
   syncTaskUpdated: (task: TaskInfo) => void;
   syncTaskFailed: (task: TaskInfo) => void;
   removeTask: (taskId: string) => void;
+  onPointsChanged?: () => void;
   enabled?: boolean;
 };
 
@@ -19,6 +20,7 @@ export function useDashboardLifecycle({
   syncTaskUpdated,
   syncTaskFailed,
   removeTask,
+  onPointsChanged,
   enabled = true,
 }: UseDashboardLifecycleOptions): void {
   const removalTimeoutsRef = useRef<number[]>([]);
@@ -81,10 +83,12 @@ export function useDashboardLifecycle({
     onTaskCompleted: (task) => {
       syncTaskUpdated(task);
       void refreshHistory(true);
+      onPointsChanged?.();
       scheduleTaskRemoval(task.taskId, 2_000);
     },
     onTaskFailed: (task) => {
       syncTaskFailed(task);
+      onPointsChanged?.();
       scheduleTaskRemoval(task.taskId, 5_000);
     },
     onError: () => {

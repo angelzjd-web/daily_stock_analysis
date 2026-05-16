@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 export type ApiErrorCategory =
+  | 'insufficient_points'
   | 'agent_disabled'
   | 'missing_params'
   | 'llm_not_configured'
@@ -167,6 +168,24 @@ function extractErrorCode(data: unknown): string | null {
   return pickString(data.error, data.code);
 }
 
+/**
+ * Translate common Pydantic validation messages (422) to Chinese.
+ */
+function translateValidationMessage(text: string): string {
+  const rules: [RegExp, string][] = [
+    [/string should have at least (\d+) characters/i, '至少需要 $1 个字符'],
+    [/string should have at most (\d+) characters/i, '最多不超过 $1 个字符'],
+    [/field required/i, '此字段为必填项'],
+    [/value is not a valid/i, '输入的值格式不正确'],
+  ];
+  for (const [re, replacement] of rules) {
+    if (re.test(text)) {
+      return text.replace(re, replacement);
+    }
+  }
+  return text;
+}
+
 export function extractErrorPayloadText(data: unknown): string | null {
   if (typeof data === 'string') {
     return data.trim() || null;
@@ -308,6 +327,16 @@ export function parseApiError(error: unknown): ParsedApiError {
       rawMessage,
       status,
       category: 'agent_disabled',
+    });
+  }
+
+  if (errorCode === 'insufficient_points' || includesAny(matchText, ['insufficient_points', '积分不足'])) {
+    return createParsedApiError({
+      title: '积分不足',
+      message: payloadText ?? '当前积分余额不足，请联系管理员充值。',
+      rawMessage,
+      status,
+      category: 'insufficient_points',
     });
   }
 
@@ -454,6 +483,18 @@ export function parseApiError(error: unknown): ParsedApiError {
       rawMessage,
       status,
       category: 'local_connection_failed',
+    });
+  }
+
+  // 422 Pydantic validation error → translate common messages to Chinese
+  if (status === 422 && payloadText) {
+    const translated = translateValidationMessage(payloadText);
+    return createParsedApiError({
+      title: '请求参数校验失败',
+      message: translated,
+      rawMessage,
+      status,
+      category: 'http_error',
     });
   }
 

@@ -11,7 +11,7 @@ API v1 路由聚合
 
 from fastapi import APIRouter
 
-from api.v1.endpoints import analysis, auth, history, stocks, backtest, system_config, agent, usage, portfolio, mx_data
+from api.v1.endpoints import analysis, auth, history, stocks, backtest, system_config, agent, usage, portfolio, mx_data, points
 
 # 创建 v1 版本主路由
 router = APIRouter(prefix="/api/v1")
@@ -74,4 +74,9 @@ router.include_router(
     mx_data.router,
     prefix="/mx",
     tags=["东方财富妙想数据"]
+)
+
+router.include_router(
+    points.router,
+    tags=["Points"]
 )

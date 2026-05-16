@@ -9,7 +9,7 @@ import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
@@ -146,17 +146,47 @@ async def get_strategies():
     )
 
 @router.post("/chat", response_model=ChatResponse)
-async def agent_chat(request: ChatRequest):
+async def agent_chat(http_request: Request, request: ChatRequest):
     """
     Chat with the AI Agent.
     """
     config = get_config()
-    
+
     if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
-        
+
+    # Extract user_id for points deduction
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
+    # Check points balance before proceeding
+    if db_user_id:
+        try:
+            from src.auth import is_auth_enabled
+            if is_auth_enabled():
+                from src.points import check_points_sufficient, COST_AGENT
+                sufficient, balance = check_points_sufficient(db_user_id, COST_AGENT)
+                if not sufficient:
+                    raise HTTPException(
+                        status_code=402,
+                        detail={
+                            "error": "insufficient_points",
+                            "message": f"积分不足，当前余额 {balance}，需要 {COST_AGENT} 积分",
+                            "balance": balance,
+                            "required": COST_AGENT,
+                        }
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
     session_id = request.session_id or str(uuid.uuid4())
-    
+
     try:
         skills = request.effective_skills
         executor = _build_executor(config, skills or None)
@@ -173,16 +203,28 @@ async def agent_chat(request: ChatRequest):
         result = await loop.run_in_executor(
             None,
             lambda: executor.chat(message=request.message, session_id=session_id,
-                                  context=ctx),
+                                  context=ctx, user_id=db_user_id),
         )
 
-        return ChatResponse(
+        # Deduct points after successful agent chat
+        if result.success and db_user_id:
+            try:
+                from src.auth import is_auth_enabled
+                if is_auth_enabled():
+                    from src.points import deduct_points, COST_AGENT
+                    deduct_points(db_user_id, COST_AGENT, "agent", "Agent对话")
+            except Exception as pts_err:
+                logger.warning("Failed to deduct points for agent chat: %s", pts_err)
+
+        response = ChatResponse(
             success=result.success,
             content=result.content,
             session_id=session_id,
             error=result.error
         )
-            
+
+        return response
+
     except Exception as e:
         logger.error(f"Agent chat API failed: {e}")
         logger.exception("Agent chat error details:")
@@ -205,7 +247,7 @@ class SessionMessagesResponse(BaseModel):
 
 
 @router.get("/chat/sessions", response_model=SessionsResponse)
-async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
+async def list_chat_sessions(http_request: Request, limit: int = 50, user_id: Optional[str] = None):
     """获取聊天会话列表
 
     Args:
@@ -217,27 +259,55 @@ async def list_chat_sessions(limit: int = 50, user_id: Optional[str] = None):
             ``feishu_ou_abc``.
     """
     from src.storage import get_db
+
+    # Extract db user_id for multi-user isolation
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
     sessions = get_db().get_chat_sessions(
         limit=limit,
         session_prefix=user_id,
         extra_session_ids=[user_id] if user_id else None,
+        user_id=db_user_id,
     )
     return SessionsResponse(sessions=sessions)
 
 
 @router.get("/chat/sessions/{session_id}", response_model=SessionMessagesResponse)
-async def get_chat_session_messages(session_id: str, limit: int = 100):
+async def get_chat_session_messages(http_request: Request, session_id: str, limit: int = 100):
     """获取单个会话的完整消息"""
     from src.storage import get_db
-    messages = get_db().get_conversation_messages(session_id, limit=limit)
+
+    # Verify ownership: only allow access to own sessions
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
+    messages = get_db().get_conversation_messages(session_id, limit=limit, user_id=db_user_id)
     return SessionMessagesResponse(session_id=session_id, messages=messages)
 
 
 @router.delete("/chat/sessions/{session_id}")
-async def delete_chat_session(session_id: str):
+async def delete_chat_session(http_request: Request, session_id: str):
     """删除指定会话"""
     from src.storage import get_db
-    count = get_db().delete_conversation_session(session_id)
+
+    # Verify ownership: only allow deleting own sessions
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
+    count = get_db().delete_conversation_session(session_id, user_id=db_user_id)
     return {"deleted": count}
 
 
@@ -371,7 +441,7 @@ async def agent_research(request: ResearchRequest):
 
 
 @router.post("/chat/stream")
-async def agent_chat_stream(request: ChatRequest):
+async def agent_chat_stream(http_request: Request, request: ChatRequest):
     """
     Chat with the AI Agent, streaming progress via SSE.
     Each SSE event is a JSON object with a 'type' field:
@@ -385,6 +455,36 @@ async def agent_chat_stream(request: ChatRequest):
     config = get_config()
     if not config.is_agent_available():
         raise HTTPException(status_code=400, detail="Agent mode is not enabled")
+
+    # Extract user_id for points deduction
+    db_user_id = None
+    try:
+        from api.deps import get_current_user_id
+        db_user_id = get_current_user_id(http_request)
+    except Exception:
+        pass
+
+    # Check points balance before proceeding
+    if db_user_id:
+        try:
+            from src.auth import is_auth_enabled
+            if is_auth_enabled():
+                from src.points import check_points_sufficient, COST_AGENT
+                sufficient, balance = check_points_sufficient(db_user_id, COST_AGENT)
+                if not sufficient:
+                    raise HTTPException(
+                        status_code=402,
+                        detail={
+                            "error": "insufficient_points",
+                            "message": f"积分不足，当前余额 {balance}，需要 {COST_AGENT} 积分",
+                            "balance": balance,
+                            "required": COST_AGENT,
+                        }
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
     session_id = request.session_id or str(uuid.uuid4())
     loop = asyncio.get_running_loop()
@@ -412,18 +512,29 @@ async def agent_chat_stream(request: ChatRequest):
                 session_id=session_id,
                 progress_callback=progress_callback,
                 context=stream_ctx,
+                user_id=db_user_id,
             )
-            asyncio.run_coroutine_threadsafe(
-                queue.put({
-                    "type": "done",
-                    "success": result.success,
-                    "content": result.content,
-                    "error": result.error,
-                    "total_steps": result.total_steps,
-                    "session_id": session_id,
-                }),
-                loop,
-            )
+
+            # Deduct points after successful agent chat
+            if result.success and db_user_id:
+                try:
+                    from src.auth import is_auth_enabled
+                    if is_auth_enabled():
+                        from src.points import deduct_points, COST_AGENT
+                        deduct_points(db_user_id, COST_AGENT, "agent", "Agent对话")
+                except Exception as pts_err:
+                    logger.warning("Failed to deduct points for agent stream: %s", pts_err)
+
+            done_event = {
+                "type": "done",
+                "success": result.success,
+                "content": result.content,
+                "error": result.error,
+                "total_steps": result.total_steps,
+                "session_id": session_id,
+            }
+
+            asyncio.run_coroutine_threadsafe(queue.put(done_event), loop)
         except Exception as exc:
             logger.error(f"Agent stream error: {exc}")
             asyncio.run_coroutine_threadsafe(

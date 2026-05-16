@@ -7,8 +7,9 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
+from api.deps import get_current_user_id
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.portfolio import (
     PortfolioAccountCreateRequest,
@@ -77,21 +78,38 @@ def _serialize_import_record(item: dict) -> PortfolioImportTradeItem:
     return PortfolioImportTradeItem(**payload)
 
 
+def _get_owner_id(http_request: Request) -> Optional[str]:
+    """Extract current user's owner_id for portfolio isolation.
+
+    Maps db user_id (int) to the string owner_id used by portfolio accounts.
+    Returns None when auth is disabled or user is not logged in.
+    """
+    try:
+        db_user_id = get_current_user_id(http_request)
+        if db_user_id is not None:
+            return str(db_user_id)
+    except Exception:
+        pass
+    return None
+
+
 @router.post(
     "/accounts",
     response_model=PortfolioAccountItem,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Create portfolio account",
 )
-def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountItem:
+def create_account(http_request: Request, request: PortfolioAccountCreateRequest) -> PortfolioAccountItem:
     service = PortfolioService()
+    # Override owner_id with authenticated user for isolation
+    owner_id = _get_owner_id(http_request) or request.owner_id
     try:
         row = service.create_account(
             name=request.name,
             broker=request.broker,
             market=request.market,
             base_currency=request.base_currency,
-            owner_id=request.owner_id,
+            owner_id=owner_id,
         )
         return PortfolioAccountItem(**row)
     except ValueError as exc:
@@ -107,11 +125,14 @@ def create_account(request: PortfolioAccountCreateRequest) -> PortfolioAccountIt
     summary="List portfolio accounts",
 )
 def list_accounts(
+    http_request: Request,
     include_inactive: bool = Query(False, description="Whether to include inactive accounts"),
 ) -> PortfolioAccountListResponse:
     service = PortfolioService()
+    # Filter by owner_id for user isolation
+    owner_id = _get_owner_id(http_request)
     try:
-        rows = service.list_accounts(include_inactive=include_inactive)
+        rows = service.list_accounts(include_inactive=include_inactive, owner_id=owner_id)
         return PortfolioAccountListResponse(accounts=[PortfolioAccountItem(**item) for item in rows])
     except Exception as exc:
         raise _internal_error("List accounts failed", exc)
@@ -123,8 +144,10 @@ def list_accounts(
     responses={400: {"model": ErrorResponse}, 404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Update portfolio account",
 )
-def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> PortfolioAccountItem:
+def update_account(account_id: int, http_request: Request, request: PortfolioAccountUpdateRequest) -> PortfolioAccountItem:
     service = PortfolioService()
+    # Override owner_id with authenticated user for isolation
+    owner_id = _get_owner_id(http_request) or request.owner_id
     try:
         updated = service.update_account(
             account_id,
@@ -132,7 +155,7 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
             broker=request.broker,
             market=request.market,
             base_currency=request.base_currency,
-            owner_id=request.owner_id,
+            owner_id=owner_id,
             is_active=request.is_active,
         )
         if updated is None:
@@ -154,10 +177,10 @@ def update_account(account_id: int, request: PortfolioAccountUpdateRequest) -> P
     responses={404: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Deactivate portfolio account",
 )
-def delete_account(account_id: int):
+def delete_account(account_id: int, http_request: Request):
     service = PortfolioService()
     try:
-        ok = service.deactivate_account(account_id)
+        ok = service.deactivate_account(account_id, owner_id=_get_owner_id(http_request))
         if not ok:
             raise HTTPException(
                 status_code=404,
@@ -176,7 +199,7 @@ def delete_account(account_id: int):
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Record trade event",
 )
-def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedResponse:
+def create_trade(http_request: Request, request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedResponse:
     service = PortfolioService()
     try:
         data = service.record_trade(
@@ -192,6 +215,7 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
             currency=request.currency,
             trade_uid=request.trade_uid,
             note=request.note,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioEventCreatedResponse(**data)
     except PortfolioBusyError as exc:
@@ -213,6 +237,7 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
     summary="List trade events",
 )
 def list_trades(
+    http_request: Request,
     account_id: Optional[int] = Query(None, description="Optional account id"),
     date_from: Optional[date] = Query(None, description="Trade date from"),
     date_to: Optional[date] = Query(None, description="Trade date to"),
@@ -231,6 +256,7 @@ def list_trades(
             side=side,
             page=page,
             page_size=page_size,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioTradeListResponse(**data)
     except ValueError as exc:
@@ -245,10 +271,10 @@ def list_trades(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete trade event",
 )
-def delete_trade(trade_id: int) -> PortfolioDeleteResponse:
+def delete_trade(trade_id: int, http_request: Request) -> PortfolioDeleteResponse:
     service = PortfolioService()
     try:
-        ok = service.delete_trade_event(trade_id)
+        ok = service.delete_trade_event(trade_id, owner_id=_get_owner_id(http_request))
         if not ok:
             raise HTTPException(
                 status_code=404,
@@ -269,7 +295,7 @@ def delete_trade(trade_id: int) -> PortfolioDeleteResponse:
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Record cash event",
 )
-def create_cash_ledger(request: PortfolioCashLedgerCreateRequest) -> PortfolioEventCreatedResponse:
+def create_cash_ledger(http_request: Request, request: PortfolioCashLedgerCreateRequest) -> PortfolioEventCreatedResponse:
     service = PortfolioService()
     try:
         data = service.record_cash_ledger(
@@ -279,6 +305,7 @@ def create_cash_ledger(request: PortfolioCashLedgerCreateRequest) -> PortfolioEv
             amount=request.amount,
             currency=request.currency,
             note=request.note,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioEventCreatedResponse(**data)
     except PortfolioBusyError as exc:
@@ -296,6 +323,7 @@ def create_cash_ledger(request: PortfolioCashLedgerCreateRequest) -> PortfolioEv
     summary="List cash ledger events",
 )
 def list_cash_ledger(
+    http_request: Request,
     account_id: Optional[int] = Query(None, description="Optional account id"),
     date_from: Optional[date] = Query(None, description="Cash event date from"),
     date_to: Optional[date] = Query(None, description="Cash event date to"),
@@ -312,6 +340,7 @@ def list_cash_ledger(
             direction=direction,
             page=page,
             page_size=page_size,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioCashLedgerListResponse(**data)
     except ValueError as exc:
@@ -326,10 +355,10 @@ def list_cash_ledger(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete cash ledger event",
 )
-def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
+def delete_cash_ledger(entry_id: int, http_request: Request) -> PortfolioDeleteResponse:
     service = PortfolioService()
     try:
-        ok = service.delete_cash_ledger_event(entry_id)
+        ok = service.delete_cash_ledger_event(entry_id, owner_id=_get_owner_id(http_request))
         if not ok:
             raise HTTPException(
                 status_code=404,
@@ -350,7 +379,7 @@ def delete_cash_ledger(entry_id: int) -> PortfolioDeleteResponse:
     responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Record corporate action event",
 )
-def create_corporate_action(request: PortfolioCorporateActionCreateRequest) -> PortfolioEventCreatedResponse:
+def create_corporate_action(http_request: Request, request: PortfolioCorporateActionCreateRequest) -> PortfolioEventCreatedResponse:
     service = PortfolioService()
     try:
         data = service.record_corporate_action(
@@ -363,6 +392,7 @@ def create_corporate_action(request: PortfolioCorporateActionCreateRequest) -> P
             cash_dividend_per_share=request.cash_dividend_per_share,
             split_ratio=request.split_ratio,
             note=request.note,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioEventCreatedResponse(**data)
     except PortfolioBusyError as exc:
@@ -380,6 +410,7 @@ def create_corporate_action(request: PortfolioCorporateActionCreateRequest) -> P
     summary="List corporate action events",
 )
 def list_corporate_actions(
+    http_request: Request,
     account_id: Optional[int] = Query(None, description="Optional account id"),
     date_from: Optional[date] = Query(None, description="Corporate action effective date from"),
     date_to: Optional[date] = Query(None, description="Corporate action effective date to"),
@@ -398,6 +429,7 @@ def list_corporate_actions(
             action_type=action_type,
             page=page,
             page_size=page_size,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioCorporateActionListResponse(**data)
     except ValueError as exc:
@@ -412,10 +444,10 @@ def list_corporate_actions(
     responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     summary="Delete corporate action event",
 )
-def delete_corporate_action(action_id: int) -> PortfolioDeleteResponse:
+def delete_corporate_action(action_id: int, http_request: Request) -> PortfolioDeleteResponse:
     service = PortfolioService()
     try:
-        ok = service.delete_corporate_action_event(action_id)
+        ok = service.delete_corporate_action_event(action_id, owner_id=_get_owner_id(http_request))
         if not ok:
             raise HTTPException(
                 status_code=404,
@@ -437,6 +469,7 @@ def delete_corporate_action(action_id: int) -> PortfolioDeleteResponse:
     summary="Get portfolio snapshot",
 )
 def get_snapshot(
+    http_request: Request,
     account_id: Optional[int] = Query(None, description="Optional account id, default returns all accounts"),
     as_of: Optional[date] = Query(None, description="Snapshot date, default today"),
     cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
@@ -447,6 +480,7 @@ def get_snapshot(
             account_id=account_id,
             as_of=as_of,
             cost_method=cost_method,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioSnapshotResponse(**data)
     except ValueError as exc:
@@ -504,6 +538,7 @@ def list_csv_brokers() -> PortfolioImportBrokerListResponse:
     summary="Parse and commit broker CSV with dedup",
 )
 def commit_csv_import(
+    http_request: Request,
     account_id: int = Form(...),
     broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
     dry_run: bool = Form(False),
@@ -518,6 +553,7 @@ def commit_csv_import(
             broker=parsed["broker"],
             records=list(parsed.get("records", [])),
             dry_run=dry_run,
+            owner_id=_get_owner_id(http_request),
         )
         return PortfolioImportCommitResponse(**result)
     except ValueError as exc:
@@ -533,12 +569,13 @@ def commit_csv_import(
     summary="Refresh FX cache online with stale fallback",
 )
 def refresh_fx_rates(
+    http_request: Request,
     account_id: Optional[int] = Query(None, description="Optional account id"),
     as_of: Optional[date] = Query(None, description="Rate date, default today"),
 ) -> PortfolioFxRefreshResponse:
     service = PortfolioService()
     try:
-        data = service.refresh_fx_rates(account_id=account_id, as_of=as_of)
+        data = service.refresh_fx_rates(account_id=account_id, as_of=as_of, owner_id=_get_owner_id(http_request))
         return PortfolioFxRefreshResponse(**data)
     except ValueError as exc:
         raise _bad_request(exc)
@@ -553,13 +590,14 @@ def refresh_fx_rates(
     summary="Get portfolio risk report",
 )
 def get_risk_report(
+    http_request: Request,
     account_id: Optional[int] = Query(None, description="Optional account id"),
     as_of: Optional[date] = Query(None, description="Risk report date, default today"),
     cost_method: str = Query("fifo", description="Cost method: fifo or avg"),
 ) -> PortfolioRiskResponse:
     service = PortfolioRiskService()
     try:
-        data = service.get_risk_report(account_id=account_id, as_of=as_of, cost_method=cost_method)
+        data = service.get_risk_report(account_id=account_id, as_of=as_of, cost_method=cost_method, owner_id=_get_owner_id(http_request))
         return PortfolioRiskResponse(**data)
     except ValueError as exc:
         raise _bad_request(exc)

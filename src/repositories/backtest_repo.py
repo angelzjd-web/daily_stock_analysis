@@ -33,6 +33,7 @@ class BacktestRepository:
         eval_window_days: int,
         engine_version: str,
         force: bool,
+        user_id: Optional[int] = None,
     ) -> List[AnalysisHistory]:
         """Return AnalysisHistory rows eligible for backtest."""
         cutoff_dt = datetime.now() - timedelta(days=min_age_days)
@@ -41,6 +42,8 @@ class BacktestRepository:
             conditions = [AnalysisHistory.created_at <= cutoff_dt]
             if code:
                 conditions.append(AnalysisHistory.code == code)
+            if user_id is not None:
+                conditions.append(AnalysisHistory.user_id == user_id)
 
             query = select(AnalysisHistory).where(and_(*conditions))
 
@@ -103,6 +106,7 @@ class BacktestRepository:
         days: Optional[int],
         offset: int,
         limit: int,
+        user_id: Optional[int] = None,
     ) -> Tuple[List[Tuple[BacktestResult, Optional[str], Optional[str], Optional[datetime]]], int]:
         with self.db.get_session() as session:
             conditions = self._build_result_conditions(
@@ -112,6 +116,7 @@ class BacktestRepository:
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
                 days=days,
+                user_id=user_id,
             )
 
             where_clause = and_(*conditions) if conditions else True
@@ -146,6 +151,7 @@ class BacktestRepository:
         analysis_date_from: Optional[date] = None,
         analysis_date_to: Optional[date] = None,
         days: Optional[int] = None,
+        user_id: Optional[int] = None,
     ) -> int:
         """Return the number of matching BacktestResult rows without loading them."""
         with self.db.get_session() as session:
@@ -156,6 +162,7 @@ class BacktestRepository:
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
                 days=days,
+                user_id=user_id,
             )
             where_clause = and_(*conditions) if conditions else True
             count = session.execute(
@@ -175,6 +182,7 @@ class BacktestRepository:
         analysis_date_to: Optional[date] = None,
         days: Optional[int] = None,
         limit: Optional[int] = None,
+        user_id: Optional[int] = None,
     ) -> List[BacktestResult]:
         with self.db.get_session() as session:
             conditions = self._build_result_conditions(
@@ -184,6 +192,7 @@ class BacktestRepository:
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
                 days=days,
+                user_id=user_id,
             )
             where_clause = and_(*conditions) if conditions else True
             query = (
@@ -300,6 +309,7 @@ class BacktestRepository:
         engine_version: Optional[str] = None,
         analysis_date_from: Optional[date] = None,
         analysis_date_to: Optional[date] = None,
+        user_id: Optional[int] = None,
     ) -> List[int]:
         """Return sorted distinct eval_window_days for matching results."""
         with self.db.get_session() as session:
@@ -310,6 +320,7 @@ class BacktestRepository:
                 analysis_date_from=analysis_date_from,
                 analysis_date_to=analysis_date_to,
                 days=None,
+                user_id=user_id,
             )
             where_clause = and_(*conditions) if conditions else True
             rows = session.execute(
@@ -329,6 +340,7 @@ class BacktestRepository:
         analysis_date_from: Optional[date],
         analysis_date_to: Optional[date],
         days: Optional[int],
+        user_id: Optional[int] = None,
     ) -> List[object]:
         conditions = []
         if code:
@@ -344,4 +356,10 @@ class BacktestRepository:
         if days:
             cutoff = datetime.now() - timedelta(days=int(days))
             conditions.append(BacktestResult.evaluated_at >= cutoff)
+        # user_id filtering via subquery on AnalysisHistory
+        if user_id is not None:
+            user_analysis_ids = select(AnalysisHistory.id).where(
+                AnalysisHistory.user_id == user_id
+            )
+            conditions.append(BacktestResult.analysis_history_id.in_(user_analysis_ids))
         return conditions

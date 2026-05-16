@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { BarChart3, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Settings2, UserCircle } from 'lucide-react';
+import { BarChart3, BriefcaseBusiness, Coins, Home, LogOut, MessageSquareQuote, Settings2, UserCircle } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
@@ -108,7 +108,16 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           <UserCircle className="h-5 w-5 shrink-0 text-secondary-text" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-xs font-medium text-foreground">{currentUser.username}</p>
-            <p className="text-[10px] text-muted-text">{currentUser.role === 'admin' ? '管理员' : '用户'}</p>
+            <div className="flex items-center gap-1">
+              <p className="text-[10px] text-muted-text">{currentUser.role === 'admin' ? '管理员' : '用户'}</p>
+              <span className="text-[10px] text-muted-text">·</span>
+              <div className="flex items-center gap-0.5">
+                <Coins className="h-3 w-3 text-amber-500" />
+                <span className={`text-[10px] ${(currentUser.pointsBalance ?? 0) < 0 ? 'text-red-500' : 'text-muted-text'}`}>
+                  {currentUser.pointsBalance ?? 0}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

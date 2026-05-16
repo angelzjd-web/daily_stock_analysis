@@ -6,9 +6,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 
-from api.deps import get_database_manager
+from api.deps import get_current_user_id, get_database_manager
 from api.v1.schemas.usage import UsageSummaryResponse
 from src.storage import DatabaseManager
 
@@ -41,6 +41,7 @@ def _date_range(period: str):
 )
 def get_usage_summary(
     period: str = Query("month", description="'today' | 'month' | 'all'"),
+    http_request: Request = None,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> UsageSummaryResponse:
     if period not in _VALID_PERIODS:
@@ -48,7 +49,8 @@ def get_usage_summary(
 
     from_dt, to_dt = _date_range(period)
 
-    data = db_manager.get_llm_usage_summary(from_dt, to_dt)
+    db_user_id = get_current_user_id(http_request) if http_request else None
+    data = db_manager.get_llm_usage_summary(from_dt, to_dt, user_id=db_user_id)
 
     return UsageSummaryResponse(
         period=period,

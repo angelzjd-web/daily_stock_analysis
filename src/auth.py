@@ -402,6 +402,7 @@ def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
                 "password_hash": user.password_hash,
                 "role": user.role,
                 "is_active": user.is_active,
+                "points_balance": user.points_balance or 0,
                 "created_at": user.created_at,
             }
     except Exception as e:
@@ -425,6 +426,7 @@ def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
                 "password_hash": user.password_hash,
                 "role": user.role,
                 "is_active": user.is_active,
+                "points_balance": user.points_balance or 0,
                 "created_at": user.created_at,
             }
     except Exception as e:
@@ -484,6 +486,7 @@ def list_users() -> list:
                     "email": u.email,
                     "role": u.role,
                     "isActive": u.is_active,
+                    "pointsBalance": u.points_balance or 0,
                     "createdAt": u.created_at.isoformat() if u.created_at else None,
                 }
                 for u in users
@@ -519,6 +522,9 @@ def update_user(user_id: int, **kwargs) -> Optional[str]:
                 if err:
                     return err
                 user.password_hash = hash_password(kwargs["password"])
+
+            if "points_balance" in kwargs:
+                user.points_balance = int(kwargs["points_balance"])
 
             user.updated_at = datetime.now()
         return None

@@ -12,6 +12,7 @@ import { HistoryList } from '../components/history';
 import { ReportMarkdown, ReportSummary } from '../components/report';
 import { TaskPanel } from '../components/tasks';
 import { useDashboardLifecycle, useHomeDashboardState } from '../hooks';
+import { useAuth } from '../contexts/AuthContext';
 import type { SetupStatusResponse } from '../types/systemConfig';
 import { getReportText, normalizeReportLanguage } from '../utils/reportLanguage';
 
@@ -23,6 +24,7 @@ type MarketReviewNotice = {
 
 const HomePage: React.FC = () => {
   const navigate = useNavigate();
+  const { authEnabled, currentUser, refreshPoints } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSubmittingMarketReview, setIsSubmittingMarketReview] = useState(false);
@@ -30,6 +32,7 @@ const HomePage: React.FC = () => {
   const [marketReviewError, setMarketReviewError] = useState<ParsedApiError | null>(null);
   const [marketReviewReport, setMarketReviewReport] = useState<string | null>(null);
   const [marketReviewReportCopied, setMarketReviewReportCopied] = useState(false);
+  const [pointsWarning, setPointsWarning] = useState(false);
   const marketReviewPollTimer = useRef<number | null>(null);
   const dashboardScrollRef = useRef<HTMLElement | null>(null);
 
@@ -137,6 +140,7 @@ const HomePage: React.FC = () => {
     syncTaskUpdated,
     syncTaskFailed,
     removeTask,
+    onPointsChanged: refreshPoints,
   });
 
   const handleHistoryItemClick = useCallback((recordId: number) => {
@@ -150,6 +154,11 @@ const HomePage: React.FC = () => {
       stockName?: string,
       selectionSource?: 'manual' | 'autocomplete' | 'import' | 'image',
     ) => {
+      if (authEnabled && currentUser && (currentUser.pointsBalance ?? 0) < 5) {
+        setPointsWarning(true);
+        return;
+      }
+      setPointsWarning(false);
       void submitAnalysis({
         stockCode,
         stockName,
@@ -157,7 +166,7 @@ const HomePage: React.FC = () => {
         selectionSource: selectionSource ?? 'manual',
       });
     },
-    [query, submitAnalysis],
+    [authEnabled, currentUser, query, submitAnalysis],
   );
 
   const handleAskFollowUp = useCallback(() => {
@@ -456,8 +465,16 @@ const HomePage: React.FC = () => {
           </div>
         </header>
 
-        {inputError || duplicateError ? (
+        {inputError || duplicateError || pointsWarning ? (
           <div className="px-3 pb-2 md:px-4">
+            {pointsWarning ? (
+              <InlineAlert
+                variant="danger"
+                title="积分不足"
+                message="当前积分余额不足，无法发起分析。请联系管理员充值。"
+                className="rounded-xl px-3 py-2 text-xs shadow-none"
+              />
+            ) : null}
             {inputError ? (
               <InlineAlert
                 variant="danger"
