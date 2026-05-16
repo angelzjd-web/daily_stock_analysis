@@ -1,7 +1,7 @@
 import type React from 'react';
 import { useState, useEffect } from 'react';
 import { motion, useMotionValue, useTransform, useSpring } from "motion/react";
-import { Lock, Loader2, Cpu, TrendingUp, Network, ShieldCheck } from "lucide-react";
+import { Lock, Loader2, Cpu, TrendingUp, Network, ShieldCheck, UserPlus } from "lucide-react";
 import { Button, Input, ParticleBackground } from '../components/common';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { ParsedApiError } from '../api/error';
@@ -10,18 +10,20 @@ import { useAuth } from '../hooks';
 import { SettingsAlert } from '../components/settings';
 
 const LoginPage: React.FC = () => {
-  const { login, passwordSet, setupState } = useAuth();
+  const { login, register, passwordSet, setupState } = useAuth();
   const navigate = useNavigate();
 
-  // Set page title
   useEffect(() => {
     document.title = '登录 - DSA';
   }, []);
+
   const [searchParams] = useSearchParams();
   const rawRedirect = searchParams.get('redirect') ?? '';
   const redirect =
     rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/';
 
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -33,7 +35,6 @@ const LoginPage: React.FC = () => {
   const mouseX = useMotionValue(0);
   const mouseY = useMotionValue(0);
 
-  // Smooth out the mouse movement
   const smoothX = useSpring(mouseX, { damping: 30, stiffness: 200 });
   const smoothY = useSpring(mouseY, { damping: 30, stiffness: 200 });
 
@@ -51,26 +52,40 @@ const LoginPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (isFirstTime && password !== passwordConfirm) {
-      setError('两次输入的密码不一致');
-      return;
+
+    if (mode === 'register' || isFirstTime) {
+      if (password !== passwordConfirm) {
+        setError('两次输入的密码不一致');
+        return;
+      }
     }
+
     setIsSubmitting(true);
     try {
-      const result = await login(password, isFirstTime ? passwordConfirm : undefined);
-      if (result.success) {
-        navigate(redirect, { replace: true });
+      if (mode === 'register') {
+        const result = await register(username, password, passwordConfirm);
+        if (result.success) {
+          navigate(redirect, { replace: true });
+        } else {
+          setError(result.error ?? '注册失败');
+        }
       } else {
-        setError(result.error ?? '登录失败');
+        const result = await login(username, password, isFirstTime ? passwordConfirm : undefined);
+        if (result.success) {
+          navigate(redirect, { replace: true });
+        } else {
+          setError(result.error ?? '登录失败');
+        }
       }
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const isRegisterMode = mode === 'register';
+
   return (
     <div className="relative flex min-h-screen flex-col justify-center overflow-hidden bg-[var(--login-bg-main)] py-12 font-sans selection:bg-[var(--login-accent-soft)] sm:px-6 lg:px-8 [perspective:1500px]">
-      {/* Dynamic Background */}
       <ParticleBackground />
 
       {/* Cyber Grid */}
@@ -154,24 +169,45 @@ const LoginPage: React.FC = () => {
                 {isFirstTime ? (
                   <>
                     <ShieldCheck className="h-6 w-6 text-emerald-400" />
-                    <span>设置初始密码</span>
+                    <span>设置管理员账户</span>
+                  </>
+                ) : isRegisterMode ? (
+                  <>
+                    <UserPlus className="h-6 w-6 text-emerald-400" />
+                    <span>注册新账户</span>
                   </>
                 ) : (
                   <>
                     <Lock className="h-5 w-5 text-[var(--login-accent-text)]" />
-                    <span>管理员登录</span>
+                    <span>用户登录</span>
                   </>
                 )}
               </h1>
               <p className="mt-2 text-sm text-[var(--login-text-secondary)]">
                 {isFirstTime
-                  ? '首次启用认证，请为系统工作台设置管理员密码。'
-                  : '访问 DSA 量化决策引擎需要有效的身份凭证。'}
+                  ? '首次启用认证，请创建管理员账户。'
+                  : isRegisterMode
+                    ? '创建新账户以使用 DSA 量化决策引擎。'
+                    : '访问 DSA 量化决策引擎需要有效的身份凭证。'}
               </p>
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="space-y-4">
+                <Input
+                  id="username"
+                  type="text"
+                  appearance="login"
+                  iconType="user"
+                  label="用户名"
+                  placeholder="请输入用户名"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  disabled={isSubmitting}
+                  autoFocus
+                  autoComplete="username"
+                />
+
                 <Input
                   id="password"
                   type="password"
@@ -183,11 +219,10 @@ const LoginPage: React.FC = () => {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isSubmitting}
-                  autoFocus
-                  autoComplete={isFirstTime ? 'new-password' : 'current-password'}
+                  autoComplete={isFirstTime || isRegisterMode ? 'new-password' : 'current-password'}
                 />
 
-                {isFirstTime && (
+                {(isFirstTime || isRegisterMode) && (
                   <Input
                     id="passwordConfirm"
                     type="password"
@@ -195,7 +230,7 @@ const LoginPage: React.FC = () => {
                     allowTogglePassword
                     iconType="password"
                     label="确认密码"
-                    placeholder="再次确认管理员密码"
+                    placeholder="再次确认密码"
                     value={passwordConfirm}
                     onChange={(e) => setPasswordConfirm(e.target.value)}
                     disabled={isSubmitting}
@@ -211,7 +246,7 @@ const LoginPage: React.FC = () => {
                   className="overflow-hidden"
                 >
                   <SettingsAlert
-                    title={isFirstTime ? '配置失败' : '验证未通过'}
+                    title={isRegisterMode ? '注册失败' : isFirstTime ? '配置失败' : '验证未通过'}
                     message={isParsedApiError(error) ? error.message : error}
                     variant="error"
                     className="!border-[var(--login-error-border)] !bg-[var(--login-error-bg)] !text-[var(--login-error-text)]"
@@ -230,15 +265,34 @@ const LoginPage: React.FC = () => {
                   {isSubmitting ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      <span>{isFirstTime ? '初始化中...' : '正在建立连接...'}</span>
+                      <span>{isRegisterMode ? '注册中...' : isFirstTime ? '初始化中...' : '正在建立连接...'}</span>
                     </>
                   ) : (
-                    <span>{isFirstTime ? '完成设置并登录' : '授权进入工作台'}</span>
+                    <span>{isRegisterMode ? '注册' : isFirstTime ? '完成设置并登录' : '授权进入工作台'}</span>
                   )}
                 </div>
                 <div className="absolute inset-0 z-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] pointer-events-none" />
               </Button>
             </form>
+
+            {/* Login / Register toggle */}
+            {!isFirstTime && (
+              <div className="mt-6 text-center">
+                <p className="text-sm text-[var(--login-text-secondary)]">
+                  {isRegisterMode ? '已有账户？' : '没有账户？'}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode(isRegisterMode ? 'login' : 'register');
+                      setError(null);
+                    }}
+                    className="ml-1 text-sm font-medium text-[var(--login-accent-text)] hover:underline"
+                  >
+                    {isRegisterMode ? '去登录' : '联系管理员注册'}
+                  </button>
+                </p>
+              </div>
+            )}
           </div>
         </motion.div>
 

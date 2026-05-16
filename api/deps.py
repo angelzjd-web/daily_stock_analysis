@@ -8,9 +8,10 @@ API 依赖注入模块
 1. 提供数据库 Session 依赖
 2. 提供配置依赖
 3. 提供服务层依赖
+4. 提供当前用户信息依赖
 """
 
-from typing import Generator
+from typing import Generator, Optional
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -69,3 +70,31 @@ def get_system_config_service(request: Request) -> SystemConfigService:
         service = SystemConfigService()
         request.app.state.system_config_service = service
     return service
+
+
+def get_current_user_id(request: Request) -> Optional[int]:
+    """Get the current authenticated user's ID from request state.
+    
+    Returns None if auth is disabled or no user is logged in.
+    """
+    return getattr(request.state, "user_id", None)
+
+
+def get_current_user_role(request: Request) -> Optional[str]:
+    """Get the current authenticated user's role from request state.
+    
+    Returns None if auth is disabled or no user is logged in.
+    """
+    return getattr(request.state, "user_role", None)
+
+
+def require_user_id(request: Request) -> int:
+    """Get the current user's ID, raising 401 if not authenticated.
+    
+    Use this for endpoints that always require authentication.
+    """
+    user_id = get_current_user_id(request)
+    if user_id is None:
+        from fastapi.responses import JSONResponse
+        raise ValueError("Authentication required")
+    return user_id

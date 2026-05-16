@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 搜索服务模块
 """
 
 import logging
+import os
 import re
 import threading
 import time
@@ -270,6 +271,81 @@ class BaseSearchProvider(ABC):
             SearchResponse 对象
         """
         return self._execute_search(query, max_results=max_results, days=days)
+
+
+class MXFinanceSearchProvider(BaseSearchProvider):
+    """
+    东方财富妙想金融资讯搜索（最高优先级）
+
+    通过 mx-finance-search API 搜索新闻、研报、公告等金融资讯。
+    基于 EM_API_KEY 认证，无需额外搜索 API Key。
+    """
+
+    def __init__(self, api_keys: Optional[List[str]] = None):
+        # 使用 EM_API_KEY 作为占位，实际认证在 _do_search 内部处理
+        em_key = os.environ.get("EM_API_KEY", "em_twy8iqm1jeU4skJvkc3P6GrMz7r8Aiou").strip()
+        super().__init__([em_key] if em_key else [], "MXFinanceSearch")
+
+    @property
+    def is_available(self) -> bool:
+        """始终可用（EM_API_KEY 有默认值）。"""
+        return True
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7, **kwargs) -> SearchResponse:
+        """调用 mx-finance-search API 执行搜索。"""
+        import asyncio as _asyncio
+        from data_provider.mx_api.finance_search import query_financial_news
+
+        try:
+            # 在同步上下文中运行异步查询
+            try:
+                loop = _asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(_asyncio.run, query_financial_news(query=query, save_to_file=False))
+                        result = future.result(timeout=30)
+                else:
+                    result = loop.run_until_complete(query_financial_news(query=query, save_to_file=False))
+            except RuntimeError:
+                result = _asyncio.run(query_financial_news(query=query, save_to_file=False))
+
+            content = result.get("content", "")
+            if not content:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self._name,
+                    success=False,
+                    error_message=result.get("error", "无搜索结果"),
+                )
+
+            # 将搜索结果转为 SearchResult 列表
+            # mx-finance-search 返回完整文本，构造为单个 SearchResult
+            search_results = [
+                SearchResult(
+                    title=query,
+                    snippet=content[:2000],  # 截取摘要
+                    url="",
+                    source="东方财富妙想",
+                    published_date=None,
+                )
+            ]
+
+            return SearchResponse(
+                query=query,
+                results=search_results,
+                provider=self._name,
+                success=True,
+            )
+        except Exception as e:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self._name,
+                success=False,
+                error_message=str(e),
+            )
 
 
 class TavilySearchProvider(BaseSearchProvider):
@@ -2205,7 +2281,13 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
+
+        # 0. 东方财富妙想金融资讯搜索（最高优先级，始终启用）
+        mx_provider = MXFinanceSearchProvider()
+        if mx_provider.is_available:
+            self._providers.insert(0, mx_provider)
+            logger.info("已配置 MXFinanceSearch 搜索（东方财富妙想 API）")
+
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 

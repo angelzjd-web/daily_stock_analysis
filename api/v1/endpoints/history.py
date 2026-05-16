@@ -12,9 +12,9 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends, Body
+from fastapi import APIRouter, HTTPException, Query, Depends, Body, Request
 
-from api.deps import get_database_manager
+from api.deps import get_database_manager, get_current_user_id
 from api.v1.schemas.history import (
     HistoryListResponse,
     HistoryItem,
@@ -61,6 +61,7 @@ router = APIRouter()
     description="分页获取历史分析记录摘要，支持按股票代码和日期范围筛选"
 )
 def get_history_list(
+    request: Request,
     stock_code: Optional[str] = Query(None, description="股票代码筛选"),
     start_date: Optional[str] = Query(None, description="开始日期 (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="结束日期 (YYYY-MM-DD)"),
@@ -86,6 +87,7 @@ def get_history_list(
     """
     try:
         service = HistoryService(db_manager)
+        user_id = get_current_user_id(request)
         
         # 使用 def 而非 async def，FastAPI 自动在线程池中执行
         result = service.get_history_list(
@@ -93,7 +95,8 @@ def get_history_list(
             start_date=start_date,
             end_date=end_date,
             page=page,
-            limit=limit
+            limit=limit,
+            user_id=user_id
         )
         
         # 转换为响应模型
@@ -141,7 +144,8 @@ def get_history_list(
     description="按历史记录主键 ID 批量删除分析历史"
 )
 def delete_history_records(
-    request: DeleteHistoryRequest = Body(...),
+    request: Request,
+    body: DeleteHistoryRequest = Body(...),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> DeleteHistoryResponse:
     """
@@ -159,7 +163,8 @@ def delete_history_records(
 
     try:
         service = HistoryService(db_manager)
-        deleted = service.delete_history_records(record_ids)
+        user_id = get_current_user_id(request)
+        deleted = service.delete_history_records(record_ids, user_id=user_id)
         return DeleteHistoryResponse(deleted=deleted)
     except HTTPException:
         raise
@@ -187,6 +192,7 @@ def delete_history_records(
 )
 def get_history_detail(
     record_id: str,
+    request: Request,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> AnalysisReport:
     """
@@ -207,9 +213,10 @@ def get_history_detail(
     """
     try:
         service = HistoryService(db_manager)
+        user_id = get_current_user_id(request)
         
         # Try integer ID first, fall back to query_id string lookup
-        result = service.resolve_and_get_detail(record_id)
+        result = service.resolve_and_get_detail(record_id, user_id=user_id)
         
         if result is None:
             raise HTTPException(
@@ -356,6 +363,7 @@ def get_history_detail(
 )
 def get_history_news(
     record_id: str,
+    request: Request,
     limit: int = Query(20, ge=1, le=100, description="返回数量限制"),
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> NewsIntelResponse:
@@ -375,7 +383,8 @@ def get_history_news(
     """
     try:
         service = HistoryService(db_manager)
-        items = service.resolve_and_get_news(record_id=record_id, limit=limit)
+        user_id = get_current_user_id(request)
+        items = service.resolve_and_get_news(record_id=record_id, limit=limit, user_id=user_id)
 
         response_items = [
             NewsIntelItem(
@@ -415,6 +424,7 @@ def get_history_news(
 )
 def get_history_markdown(
     record_id: str,
+    request: Request,
     db_manager: DatabaseManager = Depends(get_database_manager)
 ) -> MarkdownReportResponse:
     """
@@ -434,9 +444,10 @@ def get_history_markdown(
         HTTPException: 500 - 报告生成失败（服务器内部错误）
     """
     service = HistoryService(db_manager)
+    user_id = get_current_user_id(request)
 
     try:
-        markdown_content = service.get_markdown_report(record_id)
+        markdown_content = service.get_markdown_report(record_id, user_id=user_id)
     except MarkdownReportGenerationError as e:
         logger.error(f"Markdown report generation failed for {record_id}: {e.message}")
         raise HTTPException(

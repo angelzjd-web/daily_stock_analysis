@@ -46,6 +46,7 @@ class AnalysisService:
         query_id: Optional[str] = None,
         send_notification: bool = True,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        db_user_id: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析
@@ -56,6 +57,7 @@ class AnalysisService:
             force_refresh: 是否强制刷新
             query_id: 查询 ID（可选）
             send_notification: 是否发送通知（API 触发默认发送）
+            db_user_id: 数据库用户ID（用于多用户数据隔离）
             
         Returns:
             分析结果字典，包含:
@@ -83,6 +85,7 @@ class AnalysisService:
                 query_id=query_id,
                 query_source="api",
                 progress_callback=progress_callback,
+                db_user_id=db_user_id,
             )
             
             # 确定报告类型 (API: simple/detailed/full/brief -> ReportType)

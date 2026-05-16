@@ -24,10 +24,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Body
+from fastapi import APIRouter, HTTPException, Depends, Query, Body, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from api.deps import get_config_dep
+from api.deps import get_config_dep, get_current_user_id
 from api.v1.schemas.analysis import (
     AnalyzeRequest,
     AnalysisResultResponse,
@@ -206,6 +206,7 @@ def _resolve_and_normalize_input(raw_value: str) -> str:
     description="启动 AI 智能分析任务，支持同步和异步模式。异步模式下相同股票代码不允许重复提交。"
 )
 def trigger_analysis(
+        http_request: Request,
         request: AnalyzeRequest,
         config: Config = Depends(get_config_dep)
 ) -> Union[AnalysisResultResponse, JSONResponse]:
@@ -233,6 +234,7 @@ def trigger_analysis(
         HTTPException: 500 - 分析失败
     """
     # 校验请求参数
+    db_user_id = get_current_user_id(http_request)
     stock_codes = []
     if request.stock_code:
         stock_codes.append(request.stock_code)
@@ -294,15 +296,16 @@ def trigger_analysis(
                     "message": "同步模式仅支持单只股票分析，请使用 async_mode=true 进行批量分析"
                 }
             )
-        return _handle_sync_analysis(stock_codes[0], request)
+        return _handle_sync_analysis(stock_codes[0], request, db_user_id=db_user_id)
 
     # Async mode submits one task per stock.
-    return _handle_async_analysis_batch(stock_codes, request)
+    return _handle_async_analysis_batch(stock_codes, request, db_user_id=db_user_id)
 
 
 def _handle_async_analysis_batch(
     stock_codes: list,
-    request: AnalyzeRequest
+    request: AnalyzeRequest,
+    db_user_id: Optional[int] = None
 ) -> JSONResponse:
     """
     Handle asynchronous analysis requests, including batch submission.
@@ -328,6 +331,7 @@ def _handle_async_analysis_batch(
         report_type=request.report_type,
         force_refresh=request.force_refresh,
         notify=notify,
+        db_user_id=db_user_id,
     )
 
     accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(**submit_kwargs)
@@ -390,7 +394,8 @@ def _handle_async_analysis_batch(
 
 def _handle_sync_analysis(
     stock_code: str,
-    request: AnalyzeRequest
+    request: AnalyzeRequest,
+    db_user_id: Optional[int] = None
 ) -> AnalysisResultResponse:
     """
     处理同步分析请求
@@ -410,6 +415,7 @@ def _handle_sync_analysis(
             force_refresh=request.force_refresh,
             query_id=query_id,
             send_notification=getattr(request, "notify", True),
+            db_user_id=db_user_id,
         )
 
         if result is None:

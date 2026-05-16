@@ -13,6 +13,14 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { useAgentChatStore } from './stores/agentChatStore';
 import './App.css';
 
+const AdminRoute: React.FC<{ children: React.ReactElement }> = ({ children }) => {
+  const { isAdmin, authEnabled } = useAuth();
+  if (authEnabled && !isAdmin) {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+};
+
 const AppContent: React.FC = () => {
   const location = useLocation();
   const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
@@ -65,7 +73,7 @@ const AppContent: React.FC = () => {
         <Route path="/chat" element={<ChatPage />} />
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings" element={<AdminRoute><SettingsPage /></AdminRoute>} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
       <Route path="/login" element={<LoginPage />} />

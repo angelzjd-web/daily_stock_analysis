@@ -84,7 +84,8 @@ class AnalysisRepository:
         query_id: str,
         report_type: str,
         news_content: Optional[str] = None,
-        context_snapshot: Optional[Dict[str, Any]] = None
+        context_snapshot: Optional[Dict[str, Any]] = None,
+        user_id: Optional[int] = None
     ) -> int:
         """
         保存分析结果
@@ -95,6 +96,7 @@ class AnalysisRepository:
             report_type: 报告类型
             news_content: 新闻内容
             context_snapshot: 上下文快照
+            user_id: 数据库用户ID（用于多用户数据隔离）
             
         Returns:
             保存的记录数
@@ -105,7 +107,8 @@ class AnalysisRepository:
                 query_id=query_id,
                 report_type=report_type,
                 news_content=news_content,
-                context_snapshot=context_snapshot
+                context_snapshot=context_snapshot,
+                user_id=user_id
             )
         except Exception as e:
             logger.error(f"保存分析结果失败: {e}")

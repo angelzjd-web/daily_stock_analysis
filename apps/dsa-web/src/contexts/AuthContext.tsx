@@ -4,15 +4,25 @@ import { createParsedApiError, getParsedApiError, type ParsedApiError } from '..
 import { authApi } from '../api/auth';
 import { useStockPoolStore } from '../stores';
 
+type CurrentUser = {
+  id: number;
+  username: string;
+  role: 'admin' | 'user';
+  email?: string;
+};
+
 type AuthContextValue = {
   authEnabled: boolean;
   loggedIn: boolean;
   passwordSet: boolean;
   passwordChangeable: boolean;
   setupState: 'enabled' | 'password_retained' | 'no_password';
+  currentUser: CurrentUser | null;
+  isAdmin: boolean;
   isLoading: boolean;
   loadError: ParsedApiError | null;
-  login: (password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: ParsedApiError }>;
+  login: (username: string, password: string, passwordConfirm?: string) => Promise<{ success: boolean; error?: ParsedApiError }>;
+  register: (username: string, password: string, passwordConfirm: string) => Promise<{ success: boolean; error?: ParsedApiError }>;
   changePassword: (
     currentPassword: string,
     newPassword: string,
@@ -44,8 +54,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [passwordSet, setPasswordSet] = useState(false);
   const [passwordChangeable, setPasswordChangeable] = useState(false);
   const [setupState, setSetupState] = useState<'enabled' | 'password_retained' | 'no_password'>('no_password');
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<ParsedApiError | null>(null);
+
+  const isAdmin = currentUser?.role === 'admin';
 
   const fetchStatus = useCallback(async () => {
     setIsLoading(true);
@@ -57,6 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPasswordSet(status.passwordSet ?? false);
       setPasswordChangeable(status.passwordChangeable ?? false);
       setSetupState(status.setupState);
+      setCurrentUser(status.currentUser ?? null);
       if (status.authEnabled && !status.loggedIn) {
         useStockPoolStore.getState().resetDashboardState();
       }
@@ -67,6 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setPasswordSet(false);
       setPasswordChangeable(false);
       setSetupState('no_password');
+      setCurrentUser(null);
       useStockPoolStore.getState().resetDashboardState();
     } finally {
       setIsLoading(false);
@@ -79,15 +94,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(
     async (
+      username: string,
       password: string,
       passwordConfirm?: string
     ): Promise<{ success: boolean; error?: ParsedApiError }> => {
       try {
-        await authApi.login(password, passwordConfirm);
+        await authApi.login(username, password, passwordConfirm);
         await fetchStatus();
         return { success: true };
       } catch (err: unknown) {
         return { success: false, error: extractLoginError(err) };
+      }
+    },
+    [fetchStatus]
+  );
+
+  const register = useCallback(
+    async (
+      username: string,
+      password: string,
+      passwordConfirm: string
+    ): Promise<{ success: boolean; error?: ParsedApiError }> => {
+      try {
+        await authApi.register(username, password, passwordConfirm);
+        await fetchStatus();
+        return { success: true };
+      } catch (err: unknown) {
+        return { success: false, error: getParsedApiError(err) };
       }
     },
     [fetchStatus]
@@ -132,9 +165,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         passwordSet,
         passwordChangeable,
         setupState,
+        currentUser,
+        isAdmin,
         isLoading,
         loadError,
         login,
+        register,
         changePassword,
         logout,
         refreshStatus: fetchStatus,

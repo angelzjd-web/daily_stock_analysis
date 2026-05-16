@@ -65,6 +65,38 @@ if TYPE_CHECKING:
 
 # === 数据模型定义 ===
 
+class User(Base):
+    """用户表 - 支持多用户注册登录与角色管理。"""
+
+    __tablename__ = 'users'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(64), nullable=False, unique=True, index=True)
+    email = Column(String(128), index=True)
+    password_hash = Column(String(256), nullable=False)  # salt_b64:hash_b64
+    role = Column(String(16), nullable=False, default='user', index=True)  # admin / user
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        Index('ix_users_username_active', 'username', 'is_active'),
+    )
+
+    def __repr__(self) -> str:
+        return f"<User(id={self.id}, username={self.username}, role={self.role})>"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'username': self.username,
+            'email': self.email,
+            'role': self.role,
+            'isActive': self.is_active,
+            'createdAt': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class StockDaily(Base):
     """
     股票日线数据模型
@@ -222,6 +254,9 @@ class AnalysisHistory(Base):
     # 关联查询链路
     query_id = Column(String(64), index=True)
 
+    # 用户隔离
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+
     # 股票信息
     code = Column(String(10), nullable=False, index=True)
     name = Column(String(50))
@@ -287,6 +322,9 @@ class BacktestResult(Base):
         index=True,
     )
 
+    # 用户隔离（冗余字段，便于按用户筛选）
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+
     # 冗余字段，便于按股票筛选
     code = Column(String(10), nullable=False, index=True)
     analysis_date = Column(Date, index=True)
@@ -348,6 +386,9 @@ class BacktestSummary(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
+    # 用户隔离
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
+
     scope = Column(String(16), nullable=False, index=True)  # overall/stock
     code = Column(String(16), index=True)
 
@@ -402,7 +443,8 @@ class PortfolioAccount(Base):
     __tablename__ = 'portfolio_accounts'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    owner_id = Column(String(64), index=True)
+    owner_id = Column(String(64), index=True)  # 保留兼容旧数据
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)  # 新增：关联 users 表
     name = Column(String(64), nullable=False)
     broker = Column(String(64))
     market = Column(String(8), nullable=False, default='cn', index=True)  # cn/hk/us
@@ -603,6 +645,7 @@ class ConversationMessage(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String(100), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -614,6 +657,8 @@ class LLMUsage(Base):
     __tablename__ = 'llm_usage'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    # 用户隔离
+    user_id = Column(Integer, ForeignKey('users.id'), index=True)
     # 'analysis' | 'agent' | 'market_review'
     call_type = Column(String(32), nullable=False, index=True)
     model = Column(String(128), nullable=False)
@@ -1178,7 +1223,8 @@ class DatabaseManager:
         report_type: str,
         news_content: Optional[str],
         context_snapshot: Optional[Dict[str, Any]] = None,
-        save_snapshot: bool = True
+        save_snapshot: bool = True,
+        user_id: Optional[int] = None,
     ) -> int:
         """
         保存分析结果历史记录
@@ -1197,6 +1243,7 @@ class DatabaseManager:
                 session.add(
                     AnalysisHistory(
                         query_id=query_id,
+                        user_id=user_id,
                         code=result.code,
                         name=result.name,
                         report_type=report_type,
@@ -1230,6 +1277,7 @@ class DatabaseManager:
         days: int = 30,
         limit: int = 50,
         exclude_query_id: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> List[AnalysisHistory]:
         """
         Query analysis history records.
@@ -1238,6 +1286,7 @@ class DatabaseManager:
         - If query_id is provided, perform exact lookup and ignore days window.
         - If query_id is not provided, apply days-based time filtering.
         - exclude_query_id: exclude records with this query_id (for history comparison).
+        - user_id: when provided, filter by user ownership.
         """
         cutoff_date = datetime.now() - timedelta(days=days)
 
@@ -1256,6 +1305,9 @@ class DatabaseManager:
             if exclude_query_id and not query_id:
                 conditions.append(AnalysisHistory.query_id != exclude_query_id)
 
+            if user_id is not None:
+                conditions.append(AnalysisHistory.user_id == user_id)
+
             results = session.execute(
                 select(AnalysisHistory)
                 .where(and_(*conditions))
@@ -1271,7 +1323,8 @@ class DatabaseManager:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         offset: int = 0,
-        limit: int = 20
+        limit: int = 20,
+        user_id: Optional[int] = None,
     ) -> Tuple[List[AnalysisHistory], int]:
         """
         分页查询分析历史记录（带总数）
@@ -1282,6 +1335,7 @@ class DatabaseManager:
             end_date: 结束日期（含）
             offset: 偏移量（跳过前 N 条）
             limit: 每页数量
+            user_id: 用户ID筛选
             
         Returns:
             Tuple[List[AnalysisHistory], int]: (记录列表, 总数)
@@ -1294,20 +1348,17 @@ class DatabaseManager:
             if code:
                 conditions.append(AnalysisHistory.code == code)
             if start_date:
-                # created_at >= start_date 00:00:00
                 conditions.append(AnalysisHistory.created_at >= datetime.combine(start_date, datetime.min.time()))
             if end_date:
-                # created_at < end_date+1 00:00:00 (即 <= end_date 23:59:59)
                 conditions.append(AnalysisHistory.created_at < datetime.combine(end_date + timedelta(days=1), datetime.min.time()))
+            if user_id is not None:
+                conditions.append(AnalysisHistory.user_id == user_id)
             
-            # 构建 where 子句
             where_clause = and_(*conditions) if conditions else True
             
-            # 查询总数
             total_query = select(func.count(AnalysisHistory.id)).where(where_clause)
             total = session.execute(total_query).scalar() or 0
             
-            # 查询分页数据
             data_query = (
                 select(AnalysisHistory)
                 .where(where_clause)
@@ -1871,13 +1922,14 @@ class DatabaseManager:
         digest = hashlib.md5(raw_key.encode("utf-8")).hexdigest()
         return f"no-url:{code}:{digest}"
 
-    def save_conversation_message(self, session_id: str, role: str, content: str) -> None:
+    def save_conversation_message(self, session_id: str, role: str, content: str, user_id: Optional[int] = None) -> None:
         """
         保存 Agent 对话消息
         """
         with self.session_scope() as session:
             msg = ConversationMessage(
                 session_id=session_id,
+                user_id=user_id,
                 role=role,
                 content=content
             )
@@ -2033,9 +2085,11 @@ class DatabaseManager:
         completion_tokens: int,
         total_tokens: int,
         stock_code: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> None:
         """Append one LLM call record to llm_usage."""
         row = LLMUsage(
+            user_id=user_id,
             call_type=call_type,
             model=model or "unknown",
             stock_code=stock_code,
@@ -2121,6 +2175,7 @@ def persist_llm_usage(
     model: str,
     call_type: str,
     stock_code: Optional[str] = None,
+    user_id: Optional[int] = None,
 ) -> None:
     """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
     try:
@@ -2132,6 +2187,7 @@ def persist_llm_usage(
             completion_tokens=usage.get("completion_tokens", 0) or 0,
             total_tokens=usage.get("total_tokens", 0) or 0,
             stock_code=stock_code,
+            user_id=user_id,
         )
     except Exception as exc:
         logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)

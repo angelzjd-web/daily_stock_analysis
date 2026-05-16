@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { BarChart3, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Settings2 } from 'lucide-react';
+import { BarChart3, BriefcaseBusiness, Home, LogOut, MessageSquareQuote, Settings2, UserCircle } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAgentChatStore } from '../../stores/agentChatStore';
@@ -21,6 +21,7 @@ type NavItem = {
   icon: React.ComponentType<{ className?: string }>;
   exact?: boolean;
   badge?: 'completion';
+  adminOnly?: boolean;
 };
 
 const NAV_ITEMS: NavItem[] = [
@@ -28,13 +29,18 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'chat', label: '问股', to: '/chat', icon: MessageSquareQuote, badge: 'completion' },
   { key: 'portfolio', label: '持仓', to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'backtest', label: '回测', to: '/backtest', icon: BarChart3 },
-  { key: 'settings', label: '设置', to: '/settings', icon: Settings2 },
+  { key: 'settings', label: '设置', to: '/settings', icon: Settings2, adminOnly: true },
 ];
 
 export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNavigate }) => {
-  const { authEnabled, logout } = useAuth();
+  const { authEnabled, isAdmin, currentUser, logout } = useAuth();
   const completionBadge = useAgentChatStore((state) => state.completionBadge);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+  const visibleItems = NAV_ITEMS.filter((item) => {
+    if (item.adminOnly && !isAdmin) return false;
+    return true;
+  });
 
   return (
     <div className="flex h-full flex-col">
@@ -48,7 +54,7 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
       </div>
 
       <nav className="flex flex-1 flex-col gap-1.5" aria-label="主导航">
-        {NAV_ITEMS.map(({ key, label, to, icon: Icon, exact, badge }) => (
+        {visibleItems.map(({ key, label, to, icon: Icon, exact, badge }) => (
           <NavLink
             key={key}
             to={to}
@@ -95,6 +101,17 @@ export const SidebarNav: React.FC<SidebarNavProps> = ({ collapsed = false, onNav
           </NavLink>
         ))}
       </nav>
+
+      {/* Current user info */}
+      {authEnabled && currentUser && !collapsed ? (
+        <div className="mb-2 flex items-center gap-2 rounded-xl border border-border/50 bg-hover/50 px-3 py-2">
+          <UserCircle className="h-5 w-5 shrink-0 text-secondary-text" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium text-foreground">{currentUser.username}</p>
+            <p className="text-[10px] text-muted-text">{currentUser.role === 'admin' ? '管理员' : '用户'}</p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-4 mb-2">
         <ThemeToggle variant="nav" collapsed={collapsed} />

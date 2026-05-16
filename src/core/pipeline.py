@@ -84,6 +84,7 @@ class StockAnalysisPipeline:
         query_source: Optional[str] = None,
         save_context_snapshot: Optional[bool] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        db_user_id: Optional[int] = None,
     ):
         """
         初始化调度器
@@ -91,6 +92,12 @@ class StockAnalysisPipeline:
         Args:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
+            source_message: Bot 消息源
+            query_id: 查询ID
+            query_source: 查询来源
+            save_context_snapshot: 是否保存上下文快照
+            progress_callback: 进度回调
+            db_user_id: 数据库用户ID（用于多用户数据隔离）
         """
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
@@ -101,6 +108,7 @@ class StockAnalysisPipeline:
             self.config.save_context_snapshot if save_context_snapshot is None else save_context_snapshot
         )
         self.progress_callback = progress_callback
+        self.db_user_id = db_user_id
         
         # 初始化各模块
         self.db = get_db()
@@ -297,7 +305,7 @@ class StockAnalysisPipeline:
             chip_data = None
             try:
                 chip_data = self.fetcher_manager.get_chip_distribution(code)
-                if chip_data:
+                if chip_data is not None:
                     logger.info(f"{stock_name}({code}) 筹码分布: 获利比例={chip_data.profit_ratio:.1%}, "
                               f"90%集中度={chip_data.concentration_90:.2%}")
                 else:
@@ -519,7 +527,8 @@ class StockAnalysisPipeline:
                         report_type=report_type.value,
                         news_content=news_context,
                         context_snapshot=context_snapshot,
-                        save_snapshot=self.save_context_snapshot
+                        save_snapshot=self.save_context_snapshot,
+                        user_id=self.db_user_id
                     )
                 except Exception as e:
                     logger.warning(f"{stock_name}({code}) 保存分析历史失败: {e}")
@@ -589,7 +598,7 @@ class StockAnalysisPipeline:
             enhanced['realtime'] = {k: v for k, v in enhanced['realtime'].items() if v is not None}
         
         # 添加筹码分布
-        if chip_data:
+        if chip_data is not None:
             current_price = getattr(realtime_quote, 'price', 0) if realtime_quote else 0
             enhanced['chip'] = {
                 'profit_ratio': chip_data.profit_ratio,
@@ -800,7 +809,7 @@ class StockAnalysisPipeline:
             
             if realtime_quote:
                 initial_context["realtime_quote"] = self._safe_to_dict(realtime_quote)
-            if chip_data:
+            if chip_data is not None:
                 initial_context["chip_distribution"] = self._safe_to_dict(chip_data)
             if trend_result:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
@@ -901,7 +910,8 @@ class StockAnalysisPipeline:
                         report_type=report_type.value,
                         news_content=None,
                         context_snapshot=initial_context,
-                        save_snapshot=self.save_context_snapshot
+                        save_snapshot=self.save_context_snapshot,
+                        user_id=self.db_user_id
                     )
                 except Exception as e:
                     logger.warning(f"[{code}] 保存 Agent 分析历史失败: {e}")

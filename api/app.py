@@ -119,6 +119,12 @@ from src.services.system_config_service import SystemConfigService
 async def app_lifespan(app: FastAPI):
     """Initialize and release shared services for the app lifecycle."""
     app.state.system_config_service = SystemConfigService()
+    # Ensure admin user exists (migrate from legacy file if needed)
+    try:
+        from src.auth import ensure_admin_user
+        ensure_admin_user()
+    except Exception as exc:
+        logger.warning("Failed to ensure admin user: %s", exc)
     try:
         yield
     finally:

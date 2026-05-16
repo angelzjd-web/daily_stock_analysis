@@ -4,33 +4,19 @@
 数据源策略层 - 包初始化
 ===================================
 
-本包实现策略模式管理多个数据源，实现：
-1. 统一的数据获取接口
-2. 自动故障切换
-3. 防封禁流控策略
+本包实现策略模式管理数据源，当前使用东方财富妙想 API (MXFetcher) 作为唯一数据源。
 
-数据源优先级（动态调整）：
-【配置了 TUSHARE_TOKEN 时】
-1. TushareFetcher (Priority 0) - 🔥 最高优先级（动态提升）
-2. EfinanceFetcher (Priority 0) - 同优先级
-3. AkshareFetcher (Priority 1) - 来自 akshare 库
-4. PytdxFetcher (Priority 2) - 来自 pytdx 库（通达信）
-5. BaostockFetcher (Priority 3) - 来自 baostock 库
-6. YfinanceFetcher (Priority 4) - 来自 yfinance 库
+数据源：
+- MXFetcher (Priority 0) - 东方财富妙想 API，覆盖 A股/港股/美股/基金/债券/宏观
 
-【未配置 TUSHARE_TOKEN 时】
-1. EfinanceFetcher (Priority 0) - 最高优先级，来自 efinance 库
-2. AkshareFetcher (Priority 1) - 来自 akshare 库
-3. PytdxFetcher (Priority 2) - 来自 pytdx 库（通达信）
-4. TushareFetcher (Priority 2) - 来自 tushare 库（不可用）
-5. BaostockFetcher (Priority 3) - 来自 baostock 库
-6. YfinanceFetcher (Priority 4) - 来自 yfinance 库
-7. LongbridgeFetcher (Priority 5) - 长桥 OpenAPI（美股/港股兜底）
+原有数据源（akshare/tushare/baostock/efinance/pytdx/yfinance/longbridge）已作为兜底保留，
+MXFetcher 不可用时自动降级到原有逻辑。
 
-提示：优先级数字越小越优先，同优先级按初始化顺序排列
+提示：优先级数字越小越优先
 """
 
 from .base import BaseFetcher, DataFetcherManager
+from .mx_fetcher import MXFetcher
 from .efinance_fetcher import EfinanceFetcher
 from .akshare_fetcher import AkshareFetcher, is_hk_stock_code
 from .tushare_fetcher import TushareFetcher
@@ -43,6 +29,7 @@ from .us_index_mapping import is_us_index_code, is_us_stock_code, get_us_index_y
 __all__ = [
     'BaseFetcher',
     'DataFetcherManager',
+    'MXFetcher',
     'EfinanceFetcher',
     'AkshareFetcher',
     'TushareFetcher',
